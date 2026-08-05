@@ -18,6 +18,13 @@ export class Tooltip {
   private hideTimer: number | undefined;
   private pointerInside = false;
   private visible = false;
+  /**
+   * Incremented by every show/hide request. `show` has to await a metadata
+   * lookup, and without a generation check a slow lookup could resurrect a
+   * tooltip the pointer had already left, or a pending hide could fire after a
+   * newer show. Both were observed as flaky hover behaviour.
+   */
+  private generation = 0;
 
   get hostElement(): Element | null {
     return this.host;
@@ -36,11 +43,16 @@ export class Tooltip {
   }
 
   async show(match: Match, anchor: DOMRect): Promise<void> {
+    // Cancel any pending hide up front, before the await -- otherwise a hide
+    // scheduled just before this call can fire while the lookup is in flight.
+    window.clearTimeout(this.hideTimer);
+    const generation = ++this.generation;
+
     const meta = (await lookup([match.n])).get(match.n);
-    if (!meta) return;
+    // A hide or a different show happened while the lookup was in flight.
+    if (!meta || generation !== this.generation) return;
 
     const { card } = this.ensure();
-    window.clearTimeout(this.hideTimer);
 
     const label = canonicalLabel(meta.n, meta.k);
     const mismatch = isKindMismatch(match, meta.k);
@@ -81,8 +93,11 @@ export class Tooltip {
 
   hide(delayMs: number): void {
     window.clearTimeout(this.hideTimer);
+    // Invalidates any show() currently awaiting its lookup.
+    const generation = ++this.generation;
     const run = () => {
-      if (this.pointerInside) return;
+      // A newer show() superseded this hide while it was pending.
+      if (this.pointerInside || generation !== this.generation) return;
       this.visible = false;
       if (this.host) this.host.style.display = 'none';
     };

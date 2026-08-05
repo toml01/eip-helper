@@ -20,9 +20,9 @@ export default defineBackground(() => {
     return index;
   };
 
-  browser.runtime.onMessage.addListener((message) => {
+  browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const msg = message as LookupRequest | undefined;
-    if (msg?.type !== 'lookup') return undefined;
+    if (msg?.type !== 'lookup') return false;
 
     const idx = getIndex();
     const out: LookupResponse = {};
@@ -30,8 +30,12 @@ export default defineBackground(() => {
       const p = idx.get(n);
       if (p) out[n] = p;
     }
-    // Returning a promise is how this API sends a response; returning
-    // undefined above leaves other listeners free to handle the message.
-    return Promise.resolve(out);
+
+    // Must be sendResponse + `return true`, not a returned Promise. WXT's
+    // `browser` is globalThis.chrome in Chrome rather than a polyfill, so
+    // Chrome's semantics apply: a returned Promise is ignored and the message
+    // channel closes immediately, leaving sendMessage resolved with undefined.
+    sendResponse(out);
+    return true;
   });
 });

@@ -178,7 +178,9 @@ async function fetchSiteIndex(): Promise<Map<number, string>> {
   // column layout varies per status section -- Last Call inserts a "Review
   // ends" column and Withdrawn inserts a "Withdrawn Reason" column -- so
   // positional or shape-guessing parsers silently read the wrong field.
-  for (const [, row] of html.matchAll(/<tr>([\s\S]*?)<\/tr>/g)) {
+  for (const rowMatch of html.matchAll(/<tr>([\s\S]*?)<\/tr>/g)) {
+    const row = rowMatch[1];
+    if (!row) continue;
     const num = /<td[^>]*class="[^"]*\beipnum\b[^"]*"[^>]*>[\s\S]*?\/EIPS\/eip-(\d+)/.exec(row);
     if (!num) continue;
     const title = /<td[^>]*class="[^"]*\btitle\b[^"]*"[^>]*>([\s\S]*?)<\/td>/.exec(row);

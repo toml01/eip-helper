@@ -28,16 +28,12 @@ const SKIP_TAGS = new Set([
   'CANVAS',
 ]);
 
-/**
- * `highlightsFromPoint` is not in the DOM typings yet. It shipped in Chrome 135
- * and returns the highlights painted at a viewport point.
- */
-interface HighlightRegistryWithHitTest {
-  highlightsFromPoint(
-    x: number,
-    y: number,
-    options?: { shadowRoots?: ShadowRoot[] },
-  ): Array<{ highlight: Highlight; ranges: AbstractRange[] }>;
+/** A highlighted reference and the range painting it. */
+interface Hit {
+  start: number;
+  end: number;
+  match: Match;
+  range: Range;
 }
 
 export default defineContentScript({
@@ -45,51 +41,41 @@ export default defineContentScript({
   runAt: 'document_idle',
   allFrames: false,
   main() {
-    // Paint-only highlighting is the whole reason this extension can run on
-    // <all_urls> safely. Without it, the alternative would be wrapping matches
-    // in <span>s, which corrupts React reconciliation and contenteditable.
-    const registry = CSS?.highlights as unknown as
-      | (HighlightRegistry & HighlightRegistryWithHitTest)
-      | undefined;
-    if (!registry || typeof registry.highlightsFromPoint !== 'function') return;
-
-    void start(registry);
+    // Paint-only highlighting is what lets this run on <all_urls> safely. The
+    // alternative -- wrapping matches in <span>s -- mutates the page DOM and
+    // breaks React reconciliation and contenteditable.
+    if (typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight === 'undefined') return;
+    void start();
   },
 });
 
-async function start(registry: HighlightRegistry & HighlightRegistryWithHitTest) {
+async function start() {
   let settings = await getSettings();
   const tooltip = new Tooltip();
 
-  /** Range identity is how a hovered highlight maps back to a proposal. */
-  let ranges = new Map<Range, Match>();
+  /** Hits grouped by text node, which is how the pointer is mapped to a match. */
+  let byNode = new Map<Text, Hit[]>();
   let observer: MutationObserver | null = null;
   let rescanTimer: number | undefined;
 
-  const clear = () => {
-    registry.delete(HIGHLIGHT_NAME);
-    ranges = new Map();
-    tooltip.hide(0);
-  };
-
   const scan = () => {
-    ranges = new Map();
+    byNode = new Map();
     if (!isSiteEnabled(settings, location.hostname)) {
-      registry.delete(HIGHLIGHT_NAME);
+      CSS.highlights.delete(HIGHLIGHT_NAME);
       return;
     }
 
     const nodes = collectTextNodes(tooltip.hostElement);
 
-    // Tier 1 first, so that "does this page discuss Ethereum at all?" is
-    // answered before deciding whether bare numbers are plausible.
+    // Tier 1 first, so "does this page discuss Ethereum at all?" is answered
+    // before deciding whether bare numbers are plausible here.
     const firstPass = matchNodes(nodes, { allowBare: false });
     const allowBare =
       settings.bareNumbers && isEthContext(location.hostname, firstPass.length > 0);
     const found = allowBare ? matchNodes(nodes, { allowBare: true }) : firstPass;
 
     if (found.length === 0) {
-      registry.delete(HIGHLIGHT_NAME);
+      CSS.highlights.delete(HIGHLIGHT_NAME);
       return;
     }
 
@@ -101,16 +87,19 @@ async function start(registry: HighlightRegistry & HighlightRegistryWithHitTest)
         range.setStart(node, match.start);
         range.setEnd(node, match.end);
       } catch {
-        continue; // Node changed under us; the next rescan will pick it up.
+        continue; // Node changed under us; the next rescan picks it up.
       }
-      ranges.set(range, match);
+      const hits = byNode.get(node);
+      const hit: Hit = { start: match.start, end: match.end, match, range };
+      if (hits) hits.push(hit);
+      else byNode.set(node, [hit]);
       rangeList.push(range);
     }
 
-    registry.set(HIGHLIGHT_NAME, new Highlight(...rangeList));
+    CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(...rangeList));
 
-    // Warm the metadata cache for what is actually on screen, so the first
-    // hover has no latency. Pages with no matches never trigger this.
+    // Warm the metadata cache for what is on the page, so the first hover has
+    // no latency. Pages with no matches never trigger this.
     void lookup([...new Set(capped.map((c) => c.match.n))]);
   };
 
@@ -129,7 +118,7 @@ async function start(registry: HighlightRegistry & HighlightRegistryWithHitTest)
     observer?.disconnect();
     observer = new MutationObserver((mutations) => {
       // The tooltip is the one thing this extension adds to the DOM; reacting
-      // to its own mutations would be an infinite rescan loop.
+      // to its own mutations would be an endless rescan loop.
       if (mutations.every((m) => tooltip.owns(m.target))) return;
       scheduleRescan();
     });
@@ -151,16 +140,11 @@ async function start(registry: HighlightRegistry & HighlightRegistryWithHitTest)
       if (hoverFrame) return;
       hoverFrame = requestAnimationFrame(() => {
         hoverFrame = 0;
-        if (ranges.size === 0) return;
+        if (byNode.size === 0) return;
 
-        const hit = registry
-          .highlightsFromPoint(e.clientX, e.clientY)
-          .find((h) => h.highlight === registry.get(HIGHLIGHT_NAME));
+        const hit = hitTest(e.clientX, e.clientY, byNode);
 
-        const range = hit?.ranges[0] as Range | undefined;
-        const match = range ? resolve(ranges, range) : undefined;
-
-        if (!match) {
+        if (!hit) {
           if (active && !tooltip.isPointerInside()) {
             active = null;
             window.clearTimeout(dwellTimer);
@@ -169,25 +153,25 @@ async function start(registry: HighlightRegistry & HighlightRegistryWithHitTest)
           return;
         }
 
-        if (active?.n === match.n && tooltip.isVisible()) return;
-        active = match;
+        if (active?.n === hit.match.n && tooltip.isVisible()) return;
+        active = hit.match;
         window.clearTimeout(dwellTimer);
         dwellTimer = window.setTimeout(() => {
-          void tooltip.show(match, range!.getBoundingClientRect());
+          void tooltip.show(hit.match, hit.range.getBoundingClientRect());
         }, HOVER_DWELL_MS);
       });
     },
     { passive: true },
   );
 
-  // A highlight is not a DOM node, so it cannot receive focus or scroll events.
-  // Hide on scroll rather than trying to keep a stale rect in sync.
+  // A highlight is not a DOM node, so it has no scroll or focus events of its
+  // own. Hide rather than try to keep a stale rect in sync.
   window.addEventListener('scroll', () => tooltip.hide(0), { passive: true, capture: true });
 
   onSettingsChanged((next: Settings) => {
     settings = next;
     injectStyle(settings);
-    clear();
+    tooltip.hide(0);
     scan();
   });
 
@@ -197,23 +181,61 @@ async function start(registry: HighlightRegistry & HighlightRegistryWithHitTest)
 }
 
 /**
- * Maps a hovered range back to its match. Identity holds in practice, since the
- * registry hands back the same Range objects that were registered, but boundary
- * comparison is a cheap guarantee against that changing.
+ * Finds the reference under the pointer.
+ *
+ * Deliberately does NOT use CSS.highlights.highlightsFromPoint. That API is the
+ * purpose-built one, but it is Chrome-135-only and was observed present-yet-
+ * always-empty in a current Chromium build (Brave 151), which would silently
+ * disable hover entirely. Resolving the caret position and then confirming
+ * against the range's own painted rects relies only on long-standing APIs and
+ * works the same everywhere.
  */
-function resolve(ranges: Map<Range, Match>, hovered: Range): Match | undefined {
-  const direct = ranges.get(hovered);
-  if (direct) return direct;
-  for (const [range, match] of ranges) {
-    if (
-      range.startContainer === hovered.startContainer &&
-      range.startOffset === hovered.startOffset &&
-      range.endOffset === hovered.endOffset
-    ) {
-      return match;
+function hitTest(x: number, y: number, byNode: Map<Text, Hit[]>): Hit | null {
+  const caret = caretAt(x, y);
+  if (!caret) return null;
+
+  const hits = byNode.get(caret.node);
+  if (!hits) return null;
+
+  for (const hit of hits) {
+    // caretAt snaps to the nearest position, so an offset inside the match is
+    // necessary but not sufficient -- confirm the pointer is really over the
+    // painted text.
+    if (caret.offset >= hit.start && caret.offset <= hit.end && containsPoint(hit.range, x, y)) {
+      return hit;
     }
   }
-  return undefined;
+  return null;
+}
+
+interface Caret {
+  node: Text;
+  offset: number;
+}
+
+function caretAt(x: number, y: number): Caret | null {
+  const doc = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+
+  const pos = doc.caretPositionFromPoint?.(x, y);
+  if (pos?.offsetNode?.nodeType === Node.TEXT_NODE) {
+    return { node: pos.offsetNode as Text, offset: pos.offset };
+  }
+  // Older Blink/WebKit spelling.
+  const range = doc.caretRangeFromPoint?.(x, y);
+  if (range?.startContainer?.nodeType === Node.TEXT_NODE) {
+    return { node: range.startContainer as Text, offset: range.startOffset };
+  }
+  return null;
+}
+
+function containsPoint(range: Range, x: number, y: number): boolean {
+  for (const rect of range.getClientRects()) {
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return true;
+  }
+  return false;
 }
 
 function collectTextNodes(tooltipHost: Element | null): Text[] {
@@ -229,8 +251,8 @@ function collectTextNodes(tooltipHost: Element | null): Text[] {
       for (let el: Element | null = parent; el; el = el.parentElement) {
         if (SKIP_TAGS.has(el.tagName)) return NodeFilter.FILTER_REJECT;
         // Editing surfaces: painting into them is harmless, but highlights
-        // interact badly with carets and selections, and the risk of appearing
-        // to corrupt a user's draft is not worth the coverage.
+        // interact badly with carets and selections, and appearing to corrupt
+        // someone's draft is not worth the coverage.
         if (el instanceof HTMLElement && el.isContentEditable) return NodeFilter.FILTER_REJECT;
       }
       return NodeFilter.FILTER_ACCEPT;
@@ -269,10 +291,10 @@ function linksToProposal(href: string, n: number): boolean {
 function injectStyle(settings: Settings) {
   document.getElementById(STYLE_ID)?.remove();
 
-  // Highlight pseudo-elements accept only a small set of properties (color,
+  // Highlight pseudo-elements accept only a few properties (color,
   // background-color, text-decoration, text-shadow, -webkit-text-stroke) --
-  // no cursor, no border, nothing that affects layout. So the affordance has
-  // to be carried by decoration and tint alone.
+  // no cursor, no border, nothing affecting layout. So the affordance has to
+  // be carried by decoration and tint alone.
   const underline = `text-decoration: underline dotted;
     text-decoration-thickness: 1px;
     text-underline-offset: 2px;
@@ -289,7 +311,7 @@ function injectStyle(settings: Settings) {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   // Must live in the page's own tree: ::highlight() resolves against the
-  // document that owns the highlighted ranges, not the extension's shadow root.
+  // document owning the highlighted ranges, not the extension's shadow root.
   style.textContent = `::highlight(${HIGHLIGHT_NAME}) {\n    ${body}\n  }`;
   document.head.append(style);
 }

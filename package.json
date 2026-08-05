@@ -12,6 +12,7 @@
     "compile": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "node test/e2e/verify.mjs",
     "data:build": "tsx scripts/build-dataset.ts",
     "postinstall": "wxt prepare"
   },
@@ -19,6 +20,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.2",
     "js-yaml": "^4.1.0",
+    "puppeteer-core": "^23.11.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8",

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>EIP Helper fixture</title>
+    <style>
+      body { font: 16px/1.7 system-ui, sans-serif; max-width: 40em; margin: 3em auto; padding: 0 1em; }
+      p { margin: 1.1em 0; }
+    </style>
+  </head>
+  <body>
+    <h1>Fixture</h1>
+
+    <p id="prefixed">Delegation arrived with EIP-7702 and builds on EIP-2718.</p>
+    <p id="nospace">Some people write EIP7702 or eip 7702 instead.</p>
+    <p id="plural-list">Compare EIPs 3074 and 7702 for the same problem.</p>
+    <p id="erc">Tokens use ERC-20 and ERC721s widely.</p>
+    <p id="crosskind">Bundlers implement EIP-4337 today.</p>
+
+    <p id="bare">Bare mention of 7702 with no prefix at all.</p>
+    <p id="years">Back in 2020 and again in 2025 and 2026 things changed.</p>
+    <p id="amounts">We raised $7702 and saw 7702 users, or 7702%.</p>
+    <p id="slug">The artifact build-7702-rc1 and hash 0x7702 are unrelated.</p>
+
+    <p id="alreadylinked">
+      See <a href="https://eips.ethereum.org/EIPS/eip-1559">EIP-1559</a> for fees.
+    </p>
+
+    <p id="editable" contenteditable="true">Draft mentioning EIP-7702 inside an editor.</p>
+
+    <textarea id="ta" rows="2" cols="40">EIP-7702 inside a textarea</textarea>
+
+    <p id="nodigits">This paragraph has no numbers at all.</p>
+
+    <div id="late"></div>
+    <script>
+      // Simulates client-side rendering, to check the MutationObserver rescan.
+      window.addLate = () => {
+        const p = document.createElement('p');
+        p.id = 'lateref';
+        p.textContent = 'Injected later: EIP-1559 fee market.';
+        document.getElementById('late').append(p);
+      };
+    </script>
+  </body>
+</html>
