@@ -1,5 +1,7 @@
 # EIP Helper
 
+[![CI](https://github.com/toml01/eip-helper/actions/workflows/ci.yml/badge.svg)](https://github.com/toml01/eip-helper/actions/workflows/ci.yml)
+
 A Chrome extension that annotates EIP/ERC references on any page. It highlights
 references like `EIP-7702` and, on hover, shows the full title, status, and links
 to the spec, forum discussion, and source.
@@ -167,6 +169,16 @@ npm run data:build  # regenerate the dataset
 `npm run test:e2e` exists because the load-bearing behaviour cannot be tested in
 jsdom: the highlight API, caret hit-testing, and the no-DOM-mutation guarantee.
 It auto-detects a Chromium-based browser; set `CHROME_PATH` to override.
+
+It loads the unpacked build over CDP (`Extensions.loadUnpacked`, via
+`browser.installExtension`), falling back to `--load-extension`. Both paths are
+needed: Chrome 137 removed `--load-extension` from *branded* Chrome builds
+because malware abused it, while Chromium, Chrome for Testing, and forks such as
+Brave still support it. The CDP path additionally requires pipe transport and
+`--enable-unsafe-extension-debugging`.
+
+CI runs the same suite on the runner's Google Chrome under `xvfb`, and uploads
+both the hover screenshot and the packaged zip.
 
 ## Permissions
 
