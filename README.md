@@ -118,11 +118,21 @@ nodes, but it still needs real nodes and offsets, so a flattened string alone is
 not enough. `src/core/segments.ts` holds the mapping and is generic over the node
 type, which makes it unit-testable without a DOM.
 
-The safety property is that runs are **broken at every block-level element**.
-Without that, a paragraph ending in "EIP" followed by one starting with "7702"
-would be read as a reference. Block detection uses a static tag list rather than
+The safety property is that runs are **broken at every block boundary**. Without
+that, a paragraph ending in "EIP" followed by text starting with "7702" would be
+read as a reference. Runs are grouped by *nearest block-level ancestor*, which is
+symmetric — it notices leaving a block as well as entering one. (Flushing only on
+entry misses `<p>...EIP</p>7702...`, where no block sits between the two runs.
+Whitespace between the tags usually hides that, since the separator pattern
+excludes newlines.) Block detection uses a static tag list rather than
 `getComputedStyle`, because resolving styles for every element on every rescan
 is far too expensive.
+
+There is deliberately **no "already a link, skip it" rule**. One existed to avoid
+double-decorating on eips.ethereum.org, but that site is disabled by default
+anyway, so the rule's only live effect was suppressing highlights on Google, Bing
+and GitHub — where a result title links to the spec but shows the reader nothing
+but a number, making the hover most valuable of all.
 
 One consequence: the per-node "skip text without digits" shortcut had to go, as
 the run holding `EIP` contains no digits at all. Measured cost is a few
@@ -276,6 +286,8 @@ both the hover screenshot and the packaged zip.
   (Twitter, most modern timelines) stay well under it.
 - **A reference split across a block boundary is not matched**, by design — see
   [above](#references-split-across-elements).
+- **No icons yet**, so the extension shows a default placeholder in the toolbar
+  and cannot be submitted to the Chrome Web Store as-is.
 - **Chromium only.** `CSS.highlights` is needed for painting. A Firefox port is
   plausible since hover no longer depends on a Chrome-only API.
 - **Data goes stale between releases**, by design — the dataset is bundled so
@@ -293,11 +305,12 @@ any node without a digit:
 | eips.ethereum.org `/all` | 1939 | 27 ms | 25.7 ms | 107 → 107 |
 | GitHub md source | 1036 | 11.6 ms | 19.8 ms | 972 → 972 |
 | ethereum.org docs | 89 | 4.3 ms | 6.1 ms | 49 → 49 |
-| DuckDuckGo search | 50 | 2.0 ms | 4.2 ms | 38 → **39** |
+| DuckDuckGo search | 54 | 2.1 ms | 3.4 ms | 41 → **43** |
 
 Worst case is roughly double on small absolute numbers, and +8 ms on the heaviest
-page. Recall is identical everywhere except the search page, which gains exactly
-the one split reference — so joining inline runs is not inventing matches.
+page. Recall is identical everywhere except the search page, which gains the split
+reference plus one that the old already-a-link rule suppressed — so joining inline
+runs is not inventing matches.
 
 ### Dynamic pages
 
