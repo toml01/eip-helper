@@ -70,3 +70,6 @@ jobs:
           name: eip-helper-extension
           path: .output/*.zip
           if-no-files-found: error
+          # .output is dot-prefixed, and upload-artifact treats hidden paths as
+          # excluded by default.
+          include-hidden-files: true
