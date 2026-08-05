@@ -14,8 +14,7 @@
     "test:watch": "vitest",
     "test:e2e": "node test/e2e/verify.mjs",
     "data:build": "tsx scripts/build-dataset.ts",
-    "postinstall": "wxt prepare",
-    "icons": "node scripts/build-icons.mjs"
+    "postinstall": "wxt prepare"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
