@@ -104,9 +104,6 @@ export class Tooltip {
     if (isKindMismatch(match, p.k)) {
       entry.append(el('div', 'note', `Referenced as ${match.writtenKind?.toUpperCase()}-${match.n}`));
     }
-    if (isUnmerged(p)) {
-      entry.append(el('div', 'note', 'Number is not final until an EIP editor assigns it.'));
-    }
 
     const links = el('div', 'links');
     for (const link of linksFor(p)) {
