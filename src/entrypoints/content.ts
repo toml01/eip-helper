@@ -1,4 +1,4 @@
-import { isValidNumber, lookup } from '../core/dataset';
+import { lookup, numberValidator } from '../core/dataset';
 import { findMatches, isEthContext } from '../core/match';
 import { buildSegment, locate, partsCovering, type Segment } from '../core/segments';
 import { getSettings, isSiteEnabled, onSettingsChanged } from '../core/settings';
@@ -85,13 +85,14 @@ async function start() {
     }
 
     const segments = collectSegments(tooltip.hostElement);
+    const isValid = numberValidator(settings.includeUnmerged);
 
     // Tier 1 first, so "does this page discuss Ethereum at all?" is answered
     // before deciding whether bare numbers are plausible here.
-    const firstPass = matchSegments(segments, false);
+    const firstPass = matchSegments(segments, false, isValid);
     const allowBare =
       settings.bareNumbers && isEthContext(location.hostname, firstPass.length > 0);
-    const found = allowBare ? matchSegments(segments, true) : firstPass;
+    const found = allowBare ? matchSegments(segments, true, isValid) : firstPass;
 
     if (found.length === 0) {
       CSS.highlights.delete(HIGHLIGHT_NAME);
@@ -182,7 +183,7 @@ async function start() {
         active = hit.match;
         window.clearTimeout(dwellTimer);
         dwellTimer = window.setTimeout(() => {
-          void tooltip.show(hit.match, hit.range.getBoundingClientRect());
+          void tooltip.show(hit.match, hit.range.getBoundingClientRect(), settings.includeUnmerged);
         }, HOVER_DWELL_MS);
       });
     },
@@ -313,10 +314,11 @@ function collectSegments(tooltipHost: Element | null): Array<Segment<Text>> {
 function matchSegments(
   segments: Array<Segment<Text>>,
   allowBare: boolean,
+  isValid: (n: number) => boolean,
 ): Array<{ segment: Segment<Text>; match: Match }> {
   const out: Array<{ segment: Segment<Text>; match: Match }> = [];
   for (const segment of segments) {
-    for (const match of findMatches(segment.text, { isValid: isValidNumber, allowBare })) {
+    for (const match of findMatches(segment.text, { isValid, allowBare })) {
       if (alreadyLinked(segment, match)) continue;
       out.push({ segment, match });
     }

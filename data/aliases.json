@@ -1,0 +1,7 @@
+[
+  {
+    "alias": 8363,
+    "target": { "pr": 12081, "repo": "EIPs" },
+    "reason": "Tapered Issuance Burn self-assigned 8361 in PR #12081. An EIP editor ruled that numbers cannot be self-assigned and that 8361 was already allocated to PR #12075 (Transaction Validity Proofs). The Hegota hardfork-meta list in PR #12087 cites this proposal as EIP-8363. Discussion on X still calls it 8361, so both numbers should resolve to it. Retire this entry once #12081 renames its file, and add the reverse alias so 8361 keeps resolving."
+  }
+]

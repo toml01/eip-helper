@@ -46,7 +46,38 @@ export interface Proposal {
   /** discussions-to URL (absent for ~5%) */ disc: string;
   /** created date */ cr: string;
   /** requires */ req: number[];
+
+  // -- present only on proposals that live in an open pull request ----------
+  /** PR number; its absence is what marks a proposal as merged */ pr?: number;
+  /** which repo the PR targets */ prRepo?: 'EIPs' | 'ERCs';
+  /** head commit, so the source link is stable */ prRef?: string;
+  /** head repo (a fork), needed to fetch and link the file */ prHead?: string;
+  /** PR creation time -- decides display order among rival claims */ prOpened?: string;
+
+  /**
+   * Other numbers this proposal is referred to by, from data/aliases.json.
+   * Hand-curated: renumberings are rare and automated title matching would risk
+   * silently merging unrelated proposals.
+   */
+  aka?: number[];
 }
+
+/** One hand-written entry in data/aliases.json. */
+interface AliasEntry {
+  alias: number;
+  target: { pr?: number; repo?: 'EIPs' | 'ERCs'; n?: number };
+  reason: string;
+}
+
+const KNOWN_STATUSES = new Set([
+  'Draft',
+  'Review',
+  'Last Call',
+  'Final',
+  'Stagnant',
+  'Withdrawn',
+  'Living',
+]);
 
 interface Frontmatter {
   eip?: number | string;
@@ -167,6 +198,274 @@ async function collect(): Promise<Map<number, Proposal>> {
   return proposals;
 }
 
+// -- open pull requests ------------------------------------------------------
+
+/**
+ * Enumerating open PRs *with their file lists* needs GraphQL, and GraphQL always
+ * needs a token. (REST would take one call per PR across ~755 PRs, which blows
+ * the 60/hour anonymous limit.) Everything else in this script is unauthenticated.
+ */
+async function githubToken(): Promise<string> {
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+  try {
+    const { stdout } = await exec('gh', ['auth', 'token']);
+    if (stdout.trim()) return stdout.trim();
+  } catch {
+    // gh not installed or not logged in; fall through to the message below.
+  }
+  throw new Error(
+    'A GitHub token is needed to index open pull requests.\n' +
+      '  Set GITHUB_TOKEN=<token>, or run `gh auth login`.',
+  );
+}
+
+async function graphql(token: string, query: string): Promise<any> {
+  const res = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: { authorization: `bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  if (!res.ok) throw new Error(`GraphQL HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const json = (await res.json()) as { data?: unknown; errors?: unknown };
+  if (json.errors) throw new Error(`GraphQL errors: ${JSON.stringify(json.errors).slice(0, 300)}`);
+  return json.data;
+}
+
+interface PrNode {
+  number: number;
+  createdAt: string;
+  headRefOid: string;
+  headRepository: { nameWithOwner: string } | null;
+  files: { nodes: Array<{ path: string }> | null } | null;
+}
+
+async function openPullRequests(token: string, repo: 'EIPs' | 'ERCs'): Promise<PrNode[]> {
+  const nodes: PrNode[] = [];
+  let cursor: string | null = null;
+  for (;;) {
+    const after = cursor ? `, after: "${cursor}"` : '';
+    // files(first: 50) rather than a smaller page: a proposal PR can carry a
+    // dozen asset files alongside the markdown, and the markdown must not fall
+    // off the end of the list.
+    const data = await graphql(
+      token,
+      `{ repository(owner: "ethereum", name: "${repo}") {
+           pullRequests(states: OPEN, first: 100${after}) {
+             pageInfo { hasNextPage endCursor }
+             nodes {
+               number createdAt headRefOid
+               headRepository { nameWithOwner }
+               files(first: 50) { nodes { path } }
+             }
+           }
+         } }`,
+    );
+    const page = data.repository.pullRequests;
+    nodes.push(...page.nodes);
+    if (!page.pageInfo.hasNextPage) break;
+    cursor = page.pageInfo.endCursor;
+  }
+  return nodes;
+}
+
+/** Runs `worker` over `items` with a small concurrency cap. */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= items.length) return;
+        results[i] = await worker(items[i]!);
+      }
+    }),
+  );
+  return results;
+}
+
+/**
+ * Collects proposals that exist only in open pull requests.
+ *
+ * EIP numbers are assigned while a proposal is still an open PR, and public
+ * discussion clusters in that window, so these are often the most-referenced
+ * proposals of all.
+ */
+async function collectOpenPRs(merged: Set<number>): Promise<Proposal[]> {
+  const token = await githubToken();
+
+  interface Candidate {
+    repo: 'EIPs' | 'ERCs';
+    kind: 'eip' | 'erc';
+    n: number;
+    filePath: string;
+    pr: number;
+    head: string;
+    ref: string;
+    opened: string;
+  }
+  const candidates: Candidate[] = [];
+  let skippedPlaceholder = 0;
+
+  for (const repo of ['EIPs', 'ERCs'] as const) {
+    const prs = await openPullRequests(token, repo);
+    const subdir = repo === 'EIPs' ? 'EIPS' : 'ERCS';
+    const kind = repo === 'EIPs' ? ('eip' as const) : ('erc' as const);
+
+    for (const pr of prs) {
+      const head = pr.headRepository?.nameWithOwner;
+      if (!head) continue;
+      for (const file of pr.files?.nodes ?? []) {
+        // A numeric filename is the filter that drops every placeholder in the
+        // wild -- eip-XXXX.md, eip-aass.md, eip-draft_*.md, erc-persistent-identity.md.
+        const m = new RegExp(`^${subdir}/(?:eip|erc)-(\\d+)\\.md$`).exec(file.path);
+        if (!m) {
+          if (new RegExp(`^${subdir}/(?:eip|erc)-.+\\.md$`).test(file.path)) skippedPlaceholder++;
+          continue;
+        }
+        const n = Number(m[1]);
+        // n === 0 is the "assign me a number" placeholder. A number already in
+        // master means this is an "Update EIP-X" PR, which is the large majority.
+        if (n === 0 || merged.has(n)) continue;
+        candidates.push({
+          repo,
+          kind,
+          n,
+          filePath: file.path,
+          pr: pr.number,
+          head,
+          ref: pr.headRefOid,
+          opened: pr.createdAt,
+        });
+      }
+    }
+    log(`    ${repo}: ${prs.length} open PRs`);
+  }
+
+  log(`    ${candidates.length} candidate files (skipped ${skippedPlaceholder} placeholder names)`);
+
+  // raw.githubusercontent is a CDN, so these do not consume the API rate limit.
+  const fetched = await mapLimit(candidates, 8, async (c) => {
+    const url = `https://raw.githubusercontent.com/${c.head}/${c.ref}/${c.filePath}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      log(`    ! HTTP ${res.status} for ${c.filePath} (PR #${c.pr})`);
+      return null;
+    }
+    const fm = parseFrontmatter(await res.text());
+    if (!fm) {
+      log(`    ! no parseable frontmatter: ${c.filePath} (PR #${c.pr})`);
+      return null;
+    }
+    // The filename and the frontmatter must agree, or we would file the proposal
+    // under a number its own document disowns -- a common template copy-paste slip.
+    if (Number(fm.eip) !== c.n) {
+      log(`    ! ${c.filePath} declares eip: ${str(fm.eip)} (PR #${c.pr}) -- skipped`);
+      return null;
+    }
+    const title = str(fm.title);
+    if (!title) {
+      log(`    ! missing title: ${c.filePath} (PR #${c.pr})`);
+      return null;
+    }
+    // Open-PR frontmatter is author-written and unreviewed, and the status is its
+    // least load-bearing field -- one PR declares `status: New`. Normalise rather
+    // than dropping an otherwise real proposal or failing the whole build.
+    let status = str(fm.status) || 'Draft';
+    if (!KNOWN_STATUSES.has(status)) {
+      log(`    ~ ${c.filePath} (PR #${c.pr}) has status ${JSON.stringify(status)} -> Draft`);
+      status = 'Draft';
+    }
+
+    const proposal: Proposal = {
+      n: c.n,
+      t: title,
+      d: str(fm.description),
+      s: status,
+      ty: str(fm.type),
+      c: str(fm.category),
+      k: c.kind,
+      disc: str(fm['discussions-to']),
+      cr: str(fm.created),
+      req: str(fm.requires)
+        .split(/[,\s]+/)
+        .map((x) => Number(x))
+        .filter((x) => Number.isInteger(x) && x > 0),
+      pr: c.pr,
+      prRepo: c.repo,
+      prRef: c.ref,
+      prHead: c.head,
+      prOpened: c.opened,
+    };
+    return proposal;
+  });
+
+  return fetched.filter((p): p is Proposal => p !== null);
+}
+
+/**
+ * Applies data/aliases.json, so one proposal can resolve under several numbers.
+ *
+ * Targets are keyed by PR number rather than proposal number: "the proposal at
+ * 8361" is ambiguous when two PRs claim it, whereas "the proposal from PR #12081"
+ * never is.
+ */
+async function applyAliases(
+  merged: Map<number, Proposal>,
+  unmerged: Proposal[],
+): Promise<string[]> {
+  const errors: string[] = [];
+  let raw: string;
+  try {
+    raw = await readFile(path.join(ROOT, 'data', 'aliases.json'), 'utf8');
+  } catch {
+    log('    no data/aliases.json; skipping');
+    return errors;
+  }
+  const entries = JSON.parse(raw) as AliasEntry[];
+
+  for (const entry of entries) {
+    const label = `alias ${entry.alias}`;
+    if (!entry.reason?.trim()) {
+      errors.push(`${label}: missing "reason" -- an undocumented alias is unauditable`);
+      continue;
+    }
+
+    const target =
+      entry.target.pr !== undefined
+        ? unmerged.find((p) => p.pr === entry.target.pr && p.prRepo === entry.target.repo)
+        : merged.get(entry.target.n!);
+    if (!target) {
+      // Loud rather than silent: a stale alias means the PR merged, was closed,
+      // or renamed its file, and the entry needs a human decision.
+      errors.push(`${label}: target ${JSON.stringify(entry.target)} not found`);
+      continue;
+    }
+
+    const primaryOwner =
+      merged.get(entry.alias) ?? unmerged.find((p) => p.n === entry.alias);
+    if (primaryOwner) {
+      if (primaryOwner === target) {
+        log(`    ${label} is now the target's own number -- alias redundant, skipping`);
+      } else {
+        errors.push(
+          `${label}: already the primary number of ${JSON.stringify(primaryOwner.t)} -- ` +
+            `real conflict, resolve by hand`,
+        );
+      }
+      continue;
+    }
+
+    target.aka = [...(target.aka ?? []), entry.alias].sort((a, b) => a - b);
+    log(`    ${entry.alias} -> ${JSON.stringify(target.t)} (PR #${target.pr ?? '-'})`);
+  }
+  return errors;
+}
+
 /** Numbers and titles as published on eips.ethereum.org, for cross-checking. */
 async function fetchSiteIndex(): Promise<Map<number, string>> {
   const res = await fetch('https://eips.ethereum.org/all');
@@ -216,9 +515,12 @@ function decodeEntities(s: string): string {
 }
 
 /**
- * Cross-checks the parsed dataset against the published site and fails the
- * build on any disagreement. This is what stops an upstream schema or layout
- * change from silently shipping a broken or empty dataset.
+ * Cross-checks the *merged* tier against the published site and fails the build on
+ * any disagreement. This is what stops an upstream schema or layout change from
+ * silently shipping a broken or empty dataset.
+ *
+ * Scoped to merged proposals deliberately: open-PR proposals appear nowhere on
+ * the site, so they are unverifiable this way and get schema checks instead.
  */
 function validate(proposals: Map<number, Proposal>, site: Map<number, string>): string[] {
   const errors: string[] = [];
@@ -254,39 +556,107 @@ function validate(proposals: Map<number, Proposal>, site: Map<number, string>): 
   return errors;
 }
 
+/**
+ * Schema-only checks for the open-PR tier. There is nothing authoritative to
+ * compare these against, so the checks assert internal consistency and a
+ * plausible count -- enough that a GraphQL shape change fails loudly rather than
+ * silently shipping zero unmerged proposals.
+ */
+function validateUnmerged(unmerged: Proposal[], merged: Map<number, Proposal>): string[] {
+  const errors: string[] = [];
+
+  for (const p of unmerged) {
+    const at = `pr #${p.pr} (eip-${p.n})`;
+    if (!p.pr || !p.prRepo || !p.prRef || !p.prOpened) {
+      errors.push(`${at}: incomplete PR provenance`);
+    }
+    if (!p.t) errors.push(`${at}: missing title`);
+    // Everything real is 4 digits by now; a low number here means a placeholder
+    // or a misparse rather than a genuine proposal.
+    if (p.n < 1000) errors.push(`${at}: implausibly low number`);
+    if (p.s && !KNOWN_STATUSES.has(p.s)) errors.push(`${at}: unknown status ${JSON.stringify(p.s)}`);
+    if (merged.has(p.n)) errors.push(`${at}: collides with a merged proposal`);
+    if (/^["']|["']$/.test(p.t)) errors.push(`${at}: title has leftover quotes`);
+  }
+
+  if (unmerged.length < 20 || unmerged.length > 600) {
+    errors.push(`implausible open-PR count: ${unmerged.length} (expected 20-600)`);
+  }
+  return errors;
+}
+
+function fail(errors: string[]): never {
+  process.stderr.write(`\nVALIDATION FAILED:\n${errors.map((e) => `  - ${e}`).join('\n')}\n`);
+  process.exit(1);
+}
+
+/** Every number a proposal answers to: its own, plus any curated aliases. */
+function numbersOf(p: Proposal): number[] {
+  return [p.n, ...(p.aka ?? [])];
+}
+
 async function main() {
   log('Building EIP/ERC dataset');
-  const proposals = await collect();
+  const merged = await collect();
 
-  log('  validating against eips.ethereum.org/all...');
+  log('  validating merged tier against eips.ethereum.org/all...');
   const site = await fetchSiteIndex();
-  log(`    site lists ${site.size} proposals; parsed ${proposals.size}`);
-
-  const errors = validate(proposals, site);
-  if (errors.length) {
-    process.stderr.write(`\nVALIDATION FAILED:\n${errors.map((e) => `  - ${e}`).join('\n')}\n`);
-    process.exit(1);
-  }
+  log(`    site lists ${site.size} proposals; parsed ${merged.size}`);
+  const mergedErrors = validate(merged, site);
+  if (mergedErrors.length) fail(mergedErrors);
   log('    ok: sets match, titles match, no leftover quotes');
 
-  const sorted = [...proposals.values()].sort((a, b) => a.n - b.n);
+  log('  indexing open pull requests...');
+  const unmerged = await collectOpenPRs(new Set(merged.keys()));
+  log(`    ${unmerged.length} proposals live only in open PRs`);
+  const unmergedErrors = validateUnmerged(unmerged, merged);
+  if (unmergedErrors.length) fail(unmergedErrors);
+
+  log('  applying data/aliases.json...');
+  const aliasErrors = await applyAliases(merged, unmerged);
+  if (aliasErrors.length) fail(aliasErrors);
+
+  // Merged entries keep their exact existing shape, so the site cross-check above
+  // stays meaningful. Within one number, merged first, then earliest PR first --
+  // see the plan's note on why not by last-updated.
+  const sorted = [...merged.values(), ...unmerged].sort(
+    (a, b) =>
+      a.n - b.n ||
+      Number(Boolean(a.pr)) - Number(Boolean(b.pr)) ||
+      (a.prOpened ?? '').localeCompare(b.prOpened ?? ''),
+  );
+
   await mkdir(path.dirname(OUT_JSON), { recursive: true });
   await writeFile(OUT_JSON, `${JSON.stringify(sorted)}\n`);
 
-  // A number-only index, inlined into the content script so that pages with no
-  // EIP references never pull in the full metadata payload.
+  // Number-only indexes, inlined into the content script so that pages with no
+  // EIP references never pull in the full metadata payload. Split by tier so the
+  // "include open PRs" setting costs nothing at match time.
+  const mergedNums = [...new Set([...merged.values()].flatMap(numbersOf))].sort((a, b) => a - b);
+  const unmergedNums = [...new Set(unmerged.flatMap(numbersOf))]
+    .filter((n) => !mergedNums.includes(n))
+    .sort((a, b) => a - b);
+
   await writeFile(
     OUT_NUMBERS,
     `// Generated by scripts/build-dataset.ts -- do not edit.\n` +
-      `// Valid proposal numbers only. Kept separate from the metadata so the\n` +
-      `// content script can reject candidate matches without loading it.\n` +
-      `export const VALID_NUMBERS: readonly number[] = [\n` +
-      `${chunk(sorted.map((p) => p.n))}\n];\n`,
+      `// Valid proposal numbers only, kept apart from the metadata so the content\n` +
+      `// script can reject candidate matches without loading it. Both lists\n` +
+      `// include curated aliases from data/aliases.json.\n\n` +
+      `/** Proposals merged into master. */\n` +
+      `export const VALID_NUMBERS: readonly number[] = [\n${chunk(mergedNums)}\n];\n\n` +
+      `/** Proposals that so far exist only in an open pull request. */\n` +
+      `export const UNMERGED_NUMBERS: readonly number[] = [\n${chunk(unmergedNums)}\n];\n`,
   );
 
   const bytes = Buffer.byteLength(JSON.stringify(sorted));
-  log(`  wrote data/eips.json (${sorted.length} proposals, ${(bytes / 1024).toFixed(1)} KB)`);
-  log(`  wrote src/core/numbers.generated.ts`);
+  const aliased = sorted.filter((p) => p.aka?.length);
+  log(
+    `  wrote data/eips.json (${merged.size} merged + ${unmerged.length} open-PR ` +
+      `= ${sorted.length}, ${(bytes / 1024).toFixed(1)} KB)`,
+  );
+  log(`  wrote src/core/numbers.generated.ts (${mergedNums.length} + ${unmergedNums.length} numbers)`);
+  if (aliased.length) log(`  ${aliased.length} proposal(s) carry aliases`);
   await rm(CACHE, { recursive: true, force: true });
 }
 

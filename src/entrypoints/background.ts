@@ -11,12 +11,27 @@ import type { Proposal } from '../core/types';
  * (which a page could fetch to detect the extension).
  */
 export default defineBackground(() => {
-  let index: Map<number, Proposal> | null = null;
+  let index: Map<number, Proposal[]> | null = null;
 
-  // Built lazily, and rebuilt for free after the worker is evicted and
-  // restarted, since the source is a bundled import rather than the network.
-  const getIndex = (): Map<number, Proposal> => {
-    index ??= new Map((proposals as Proposal[]).map((p) => [p.n, p]));
+  /**
+   * Built lazily, and rebuilt for free after the worker is evicted and restarted,
+   * since the source is a bundled import rather than the network.
+   *
+   * Grouped rather than last-write-wins: rival open PRs can claim the same number
+   * before an editor assigns it, and a proposal can also answer to curated
+   * aliases, so one number may map to several proposals.
+   */
+  const getIndex = (): Map<number, Proposal[]> => {
+    if (!index) {
+      index = new Map();
+      for (const p of proposals as Proposal[]) {
+        for (const n of [p.n, ...(p.aka ?? [])]) {
+          const list = index.get(n);
+          if (list) list.push(p);
+          else index.set(n, [p]);
+        }
+      }
+    }
     return index;
   };
 
@@ -27,8 +42,8 @@ export default defineBackground(() => {
     const idx = getIndex();
     const out: LookupResponse = {};
     for (const n of msg.numbers ?? []) {
-      const p = idx.get(n);
-      if (p) out[n] = p;
+      const list = idx.get(n);
+      if (list?.length) out[n] = list;
     }
 
     // Must be sendResponse + `return true`, not a returned Promise. WXT's

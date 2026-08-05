@@ -10,6 +10,28 @@ export interface Proposal {
   disc: string;
   cr: string;
   req: number[];
+
+  // -- present only on proposals that live in an open pull request ----------
+  /** PR number; its absence is what marks a proposal as merged. */
+  pr?: number;
+  prRepo?: 'EIPs' | 'ERCs';
+  /** Head commit, so the source link is stable. */
+  prRef?: string;
+  /** Head repo (usually a fork), needed for the source link. */
+  prHead?: string;
+  /** PR creation time; decides display order among rival claims. */
+  prOpened?: string;
+
+  /**
+   * Other numbers this proposal answers to, from data/aliases.json. Numbers are
+   * assigned by editors and get corrected, but discussion keeps using the old
+   * one -- so both have to resolve.
+   */
+  aka?: number[];
+}
+
+export function isUnmerged(p: Proposal): boolean {
+  return p.pr !== undefined;
 }
 
 /** A reference found in page text, before metadata is attached. */
@@ -37,6 +59,12 @@ export interface Settings {
    * 1000, so unguarded bare matching lights up ordinary prose.
    */
   bareNumbers: boolean;
+  /**
+   * Resolve proposals that so far exist only in an open pull request. On by
+   * default: numbers are assigned at PR-open time and discussion clusters in
+   * that window, so these are often the most-referenced proposals of all.
+   */
+  includeUnmerged: boolean;
   highlightStyle: 'underline' | 'background' | 'both';
   /** Hostnames the user has switched off. */
   disabledSites: string[];
@@ -45,6 +73,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
   bareNumbers: false,
+  includeUnmerged: true,
   highlightStyle: 'underline',
   // Redundant on the canonical site, which already renders every reference as
   // a real link with a preview.

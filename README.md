@@ -8,9 +8,10 @@ to the spec, forum discussion, and source.
 
 > EIP-7702 → **EIP-7702** · Final · Core — Set Code for EOAs
 
-Covers all **1189** proposals across `ethereum/EIPs` and `ethereum/ERCs`,
-bundled with the extension. **No network requests are made while you browse**,
-and the extension requests no host permissions.
+Covers **1189 merged proposals plus 205 that so far exist only in an open pull
+request**, across `ethereum/EIPs` and `ethereum/ERCs`, bundled with the extension.
+**No network requests are made while you browse**, and the extension requests no
+host permissions.
 
 ## Install (development)
 
@@ -127,6 +128,45 @@ One consequence: the per-node "skip text without digits" shortcut had to go, as
 the run holding `EIP` contains no digits at all. Measured cost is a few
 milliseconds — see [Performance](#performance).
 
+### Unmerged proposals, and numbers as aliases
+
+EIP numbers are assigned while a proposal is still an open pull request, and that
+is when most discussion happens — so the newest, most-referenced proposals are
+exactly the ones a merged-only dataset cannot see. The build indexes open PRs in
+both repos as a second tier, marked `UNMERGED` in the tooltip and linking to the
+pull request instead of a spec page (an unmerged number 404s on
+eips.ethereum.org).
+
+Two things make this harder than it sounds.
+
+**A number can be claimed by more than one PR, and a claim can be invalid.**
+EIP-8361 is claimed by two unrelated proposals. An editor ruled on
+[#12081](https://github.com/ethereum/EIPs/pull/12081):
+
+> EIP numbers cannot be self-assigned […] EIP-8361 has already been allocated to
+> another proposal (PR #12075).
+
+None of the obvious signals identify the invalid claim: CI passes on both, and
+#12075 (the legitimate one) is a GitHub *draft* while #12081 is not, so filtering
+drafts would keep the wrong one. Only PR creation order agrees with the editor, so
+that decides **display order** — never suppression. The tooltip shows every
+claimant in full and lets the reader judge.
+
+**A renumbered proposal keeps being discussed under its old number.** Tapered
+Issuance Burn self-assigned 8361 and is now cited as 8363, but X threads still say
+8361. Since the point of the extension is to resolve *what people write*, a
+proposal can answer to several numbers via `data/aliases.json`:
+
+```json
+[{ "alias": 8363, "target": { "pr": 12081, "repo": "EIPs" }, "reason": "…" }]
+```
+
+That file is **hand-maintained on purpose**. Renumberings are rare, and automated
+title-matching would risk silently merging unrelated proposals. Targets are keyed
+by PR number because "the proposal at 8361" is ambiguous while "the proposal from
+PR #12081" is not. Every entry needs a `reason`, and the build fails if a target
+has gone missing or if the alias collides with another proposal's own number.
+
 ### Shared number namespace
 
 EIPs and ERCs share one number space, so a number identifies exactly one
@@ -149,11 +189,16 @@ fetchable extension URL for a page to probe for.
 
 ## The dataset
 
-`data/eips.json` is generated and committed. Regenerate with:
+`data/eips.json` is generated and committed; `data/aliases.json` is hand-written.
+Regenerate with:
 
 ```sh
-npm run data:build
+npm run data:build   # needs GITHUB_TOKEN, or `gh auth login`
 ```
+
+The token is only for enumerating open pull requests: listing 756 PRs *with their
+file lists* needs GraphQL, and GraphQL always requires auth. Everything else in
+the build is unauthenticated.
 
 The **GitHub repos are the source of truth**, not `eips.ethereum.org`:
 
@@ -176,7 +221,12 @@ the EIPs copy.
 
 **The build validates itself against the published site** and fails on any
 disagreement — number sets must match exactly in both directions, every title
-must match, and no title may retain quote characters. Site cells are selected by
+must match, and no title may retain quote characters. That check covers the
+**merged tier only**, since open-PR proposals appear nowhere on the site; they get
+schema checks instead, plus a count bound so a GraphQL change fails loudly rather
+than silently shipping zero. Open-PR frontmatter is unreviewed, so the build also
+drops files whose filename and `eip:` field disagree, and normalises unknown
+statuses (one PR declares `status: New`). Site cells are selected by
 semantic class (`.eipnum`, `.title`) rather than column position, since the
 column layout varies per status section (Last Call inserts *Review ends*,
 Withdrawn inserts *Withdrawn Reason*).
@@ -213,14 +263,9 @@ both the hover screenshot and the packaged zip.
 
 ## Known limitations
 
-- **Only proposals merged into `master` are recognised.** EIP numbers are
-  assigned while a proposal is still an open pull request, and public discussion
-  clusters in exactly that pre-merge window — so the newest and most-talked-about
-  proposals are invisible. At the time of writing **87 numbers live in open PRs
-  but not in the dataset**, EIP-8361 among them (PRs
-  [#12081](https://github.com/ethereum/EIPs/pull/12081) and
-  [#12075](https://github.com/ethereum/EIPs/pull/12075)). This is the largest
-  real coverage gap.
+- **Open-PR entries can go stale.** A proposal whose PR is closed, merged, or
+  renumbered stays in the bundled dataset until the next `npm run data:build` and
+  release. Turn the tier off in options if you want merged-only.
 - **No keyboard access to the tooltip.** Highlights are not DOM nodes and cannot
   take focus. Hover is pointer-only for now; a keyboard path is planned.
 - **New content is decorated after a ~300 ms debounce**, so during fast
@@ -273,9 +318,6 @@ incremental rescanning is not worth the complexity yet.
 
 - Hotkey palette: fuzzy-search proposals by topic and insert the reference at the
   cursor
-- Recognise proposals still in open pull requests, which is where the newest and
-  most-discussed EIPs live. Would mean indexing open PRs rather than only
-  `master`, and showing such entries as unmerged drafts
 - New-activity hints for discussions (needs host permissions — a deliberate,
   separate opt-in)
 - Related-proposal graph from the `requires` field, already captured in the data

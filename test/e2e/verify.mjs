@@ -297,16 +297,33 @@ try {
     const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true });
     return collect(root).join(' | ');
   };
-  /** Polls rather than sleeping a fixed time, so the check is not timing-fragile. */
-  const waitForTooltip = async (needle, ms = 4000) => {
+  /** True when the extension's tooltip host is actually displayed. */
+  const tooltipVisible = () =>
+    page.evaluate(() =>
+      [...document.body.children].some(
+        (c) =>
+          (c.getAttribute('style') ?? '').includes('2147483647') && c.style.display === 'block',
+      ),
+    );
+
+  /**
+   * Polls rather than sleeping a fixed time, so the check is not timing-fragile.
+   *
+   * Gated on visibility, which matters: hiding the tooltip only sets
+   * `display: none` and leaves the previous entry's text in the shadow root, so
+   * reading it unconditionally can match stale content from an earlier hover.
+   */
+  const waitForTooltip = async (needle, ms = 6000) => {
     const deadline = Date.now() + ms;
     let last = '';
-    while (Date.now() < deadline) {
-      last = await shadowOf();
-      if (last.includes(needle)) return last;
+    for (;;) {
+      if (await tooltipVisible()) {
+        last = await shadowOf();
+        if (last.includes(needle)) return last;
+      }
+      if (Date.now() >= deadline) return last;
       await new Promise((r) => setTimeout(r, 100));
     }
-    return last;
   };
 
   const shadowText = await waitForTooltip('Set Code for EOAs');
@@ -332,6 +349,87 @@ try {
   console.log(`      tooltip: ${summarize(t2)}`);
   check('EIP-4337 resolves to canonical ERC-4337', t2.includes('ERC-4337'));
   check('notes the EIP/ERC mix-up', t2.includes('Referenced as EIP-4337'));
+
+  // --- 7b. open-PR proposals -------------------------------------------
+  const hoverIn = async (sel) => {
+    // The fixture is taller than the viewport, so the target must be scrolled
+    // into view before its rect is a reachable pointer position. Scrolling also
+    // hides any open tooltip, so settle before measuring.
+    await page.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), sel);
+    await new Promise((r) => setTimeout(r, 400));
+    const pt = await page.evaluate((s) => {
+      const h = CSS.highlights.get('eip-ref');
+      const el = document.querySelector(s);
+      const range = [...h].find((r) => el.contains(r.startContainer));
+      if (!range) return null;
+      const b = range.getBoundingClientRect();
+      return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    }, sel);
+    if (!pt) return null;
+    // Park the pointer away from any highlight and wait out the hide grace
+    // period, so a stale tooltip cannot satisfy the next assertion.
+    await page.mouse.move(5, 5, { steps: 2 });
+    await new Promise((r) => setTimeout(r, 400));
+    await hover(pt);
+
+    // CI runners are slow enough that the first metadata lookup can outlast the
+    // dwell; re-nudge once rather than reporting a spurious failure.
+    const shown = await waitFor(tooltipVisible, 2500);
+    if (!shown) await hover(pt);
+    return pt;
+  };
+
+  check('open-PR reference is highlighted', (await scoped('#contested')).includes('EIP-8361'));
+  check('alias number is highlighted', (await scoped('#aliased')).includes('EIP-8363'));
+
+  if (await hoverIn('#contested')) {
+    const t = await waitForTooltip('Transaction Validity Proofs');
+    console.log(`      tooltip: ${summarize(t)}`);
+    check('contested number shows both claimants', t.includes('Transaction Validity Proofs') && t.includes('Tapered Issuance Burn'));
+    check('each claimant is badged UNMERGED', (t.match(/UNMERGED/g) ?? []).length >= 2);
+    check('claimants link to their pull requests', t.includes('Pull request'));
+    check('contested tooltip offers no dead Spec link', !t.includes('| Spec |'));
+    await page.screenshot({ path: path.join(HERE, 'contested-shot.png') });
+
+    // A contested number stacks several full entries, so the card must cap and
+    // scroll rather than running off the screen. The shadow root is closed, but
+    // the host is an ordinary element, so its box reflects the content height.
+    const box = await page.evaluate(() => {
+      const host = [...document.body.children].find((c) =>
+        (c.getAttribute('style') ?? '').includes('2147483647'),
+      );
+      if (!host) return null;
+      const r = host.getBoundingClientRect();
+      return { h: r.h ?? r.height, top: r.top, viewport: window.innerHeight, display: host.style.display };
+    });
+    check('stacked tooltip is visible', box?.display === 'block');
+    check(
+      'stacked tooltip is capped to the viewport',
+      !!box && box.h > 0 && box.h <= box.viewport,
+      box ? `${Math.round(box.h)}px in ${box.viewport}px viewport` : 'no host',
+    );
+  } else {
+    check('contested number shows both claimants', false, 'no highlight to hover');
+  }
+
+  if (await hoverIn('#aliased')) {
+    const t = await waitForTooltip('also EIP-8361');
+    console.log(`      tooltip: ${summarize(t)}`);
+    check('alias resolves to the same proposal', t.includes('Tapered Issuance Burn'));
+    check('alias tooltip names the other number', t.includes('also EIP-8361'));
+    check('alias tooltip is headed by the hovered number', t.includes('EIP-8363'));
+  } else {
+    check('alias resolves to the same proposal', false, 'no highlight to hover');
+  }
+
+  if (await hoverIn('#unmerged-single')) {
+    const t = await waitForTooltip('UNMERGED');
+    console.log(`      tooltip: ${summarize(t)}`);
+    check('uncontested open-PR entry is badged and explained', t.includes('UNMERGED') && t.includes('not final'));
+  } else {
+    check('uncontested open-PR entry is badged and explained', false, 'no highlight to hover');
+  }
+
 
   // --- 8. rescan after client-side render ------------------------------
   await page.evaluate(() => window.addLate());
