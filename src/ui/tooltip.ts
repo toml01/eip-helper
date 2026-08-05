@@ -1,5 +1,5 @@
 import { lookup } from '../core/dataset';
-import { linksFor, otherNumbers, statusLine } from '../core/links';
+import { aliasNumbers, linksFor, statusLine } from '../core/links';
 import { canonicalLabel, isKindMismatch } from '../core/match';
 import { isUnmerged, type Match, type Proposal } from '../core/types';
 
@@ -81,10 +81,10 @@ export class Tooltip {
   private renderEntry(match: Match, p: Proposal): HTMLElement {
     const entry = el('div', 'entry');
 
-    // The header shows the number the reader actually hovered, so no call has to
-    // be made about which claim owns it.
+    // The header shows the CANONICAL number, not the one that happened to be
+    // hovered: hovering a stale number should correct the reader, not confirm it.
     const head = el('div', 'head', [
-      el('span', 'label', canonicalLabel(match.n, p.k)),
+      el('span', 'label', canonicalLabel(p.n, p.k)),
       el('span', 'status', statusLine(p)),
     ]);
     if (isUnmerged(p)) head.append(el('span', 'badge', 'UNMERGED'));
@@ -92,9 +92,9 @@ export class Tooltip {
 
     const title = el('div', 'title');
     title.append(el('span', 'title-text', p.t));
-    const others = otherNumbers(p, match.n);
-    if (others.length) {
-      title.append(el('span', 'also', `also ${others.map((n) => `EIP-${n}`).join(', ')}`));
+    const also = aliasNumbers(p);
+    if (also.length) {
+      title.append(el('span', 'also', `also ${also.map((n) => `EIP-${n}`).join(', ')}`));
     }
     entry.append(title);
 

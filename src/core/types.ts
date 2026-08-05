@@ -21,11 +21,17 @@ export interface Proposal {
   prHead?: string;
   /** PR creation time; decides display order among rival claims. */
   prOpened?: string;
+  /**
+   * The number in the PR's filename, when it differs from the canonical `n`.
+   * PR #12081 still ships eip-8361.md even though the proposal is now EIP-8363,
+   * so the source link has to use this rather than `n`.
+   */
+  prFileN?: number;
 
   /**
-   * Other numbers this proposal answers to, from data/aliases.json. Numbers are
-   * assigned by editors and get corrected, but discussion keeps using the old
-   * one -- so both have to resolve.
+   * Numbers still used for this proposal in the wild, from data/aliases.json.
+   * `n` is what an editor assigned; these are what people write anyway, and both
+   * have to resolve.
    */
   aka?: number[];
 }

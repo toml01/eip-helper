@@ -22,9 +22,12 @@ export function prUrl(p: Proposal): string {
 
 export function sourceUrl(p: Proposal): string {
   if (isUnmerged(p) && p.prHead && p.prRef) {
-    // Pin to the head commit so the link keeps working as the PR moves on.
+    // Pin to the head commit so the link keeps working as the PR moves on, and
+    // use the filename number rather than the canonical one: a proposal an editor
+    // has renumbered usually still ships under its old filename.
+    const n = p.prFileN ?? p.n;
     const dir = p.prRepo === 'ERCs' ? 'ERCS' : 'EIPS';
-    const file = p.prRepo === 'ERCs' ? `erc-${p.n}.md` : `eip-${p.n}.md`;
+    const file = p.prRepo === 'ERCs' ? `erc-${n}.md` : `eip-${n}.md`;
     return `https://github.com/${p.prHead}/blob/${p.prRef}/${dir}/${file}`;
   }
   return p.k === 'erc'
@@ -67,7 +70,11 @@ export function statusLine(p: Proposal): string {
   return [p.s, p.c || p.ty].filter(Boolean).join(' · ');
 }
 
-/** Other numbers this proposal answers to, excluding the one being viewed. */
-export function otherNumbers(p: Proposal, viewing: number): number[] {
-  return [p.n, ...(p.aka ?? [])].filter((n) => n !== viewing);
+/**
+ * Numbers this proposal is also known by. The tooltip leads with the canonical
+ * `n` regardless of which number was hovered, so that hovering a stale number
+ * corrects the reader rather than confirming it.
+ */
+export function aliasNumbers(p: Proposal): number[] {
+  return p.aka ?? [];
 }

@@ -163,19 +163,29 @@ that decides **display order** — never suppression. The tooltip shows every
 claimant in full and lets the reader judge.
 
 **A renumbered proposal keeps being discussed under its old number.** Tapered
-Issuance Burn self-assigned 8361 and is now cited as 8363, but X threads still say
-8361. Since the point of the extension is to resolve *what people write*, a
-proposal can answer to several numbers via `data/aliases.json`:
+Issuance Burn self-assigned 8361; its real number is **8363** — the Hegotá list
+cites it that way, and its Magicians thread redirects to
+`eip-8363-tapered-issuance-burn`. But X threads still say 8361. Since the point of
+the extension is to resolve *what people write* without endorsing it, a proposal
+is filed under the number an editor assigned and still answers to the stale ones,
+via `data/aliases.json`:
 
 ```json
-[{ "alias": 8363, "target": { "pr": 12081, "repo": "EIPs" }, "reason": "…" }]
+[{ "canonical": 8363, "alsoKnownAs": [8361], "target": { "pr": 12081, "repo": "EIPs" }, "reason": "…" }]
 ```
+
+Hovering 8361 therefore shows a card headed **EIP-8363** with *also EIP-8361* — the
+reference resolves, and the reader is corrected rather than confirmed. Note the PR
+file is still named `eip-8361.md`, so the source link uses the filename while the
+display uses the canonical number; linking `eip-8363.md` would 404.
 
 That file is **hand-maintained on purpose**. Renumberings are rare, and automated
 title-matching would risk silently merging unrelated proposals. Targets are keyed
 by PR number because "the proposal at 8361" is ambiguous while "the proposal from
 PR #12081" is not. Every entry needs a `reason`, and the build fails if a target
-has gone missing or if the alias collides with another proposal's own number.
+has gone missing or if two proposals claim the same canonical number. An alias
+*overlapping* another proposal's number is fine — that is the contested case, and
+both get shown.
 
 ### Shared number namespace
 

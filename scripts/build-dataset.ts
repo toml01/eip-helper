@@ -53,6 +53,12 @@ export interface Proposal {
   /** head commit, so the source link is stable */ prRef?: string;
   /** head repo (a fork), needed to fetch and link the file */ prHead?: string;
   /** PR creation time -- decides display order among rival claims */ prOpened?: string;
+  /**
+   * The number in the PR's filename, when it differs from the canonical `n`.
+   * Needed for the source link: PR #12081 still ships eip-8361.md even though
+   * the proposal is now EIP-8363.
+   */
+  prFileN?: number;
 
   /**
    * Other numbers this proposal is referred to by, from data/aliases.json.
@@ -62,9 +68,17 @@ export interface Proposal {
   aka?: number[];
 }
 
-/** One hand-written entry in data/aliases.json. */
+/**
+ * One hand-written entry in data/aliases.json.
+ *
+ * `canonical` is the number the proposal is properly known by, which is not
+ * always the number its file is named after: an editor can reassign a number
+ * after an author self-assigned one, and the file often lags.
+ */
 interface AliasEntry {
-  alias: number;
+  canonical: number;
+  /** Numbers still used for this proposal in the wild. */
+  alsoKnownAs: number[];
   target: { pr?: number; repo?: 'EIPs' | 'ERCs'; n?: number };
   reason: string;
 }
@@ -408,7 +422,8 @@ async function collectOpenPRs(merged: Set<number>): Promise<Proposal[]> {
 }
 
 /**
- * Applies data/aliases.json, so one proposal can resolve under several numbers.
+ * Applies data/aliases.json, so one proposal can resolve under several numbers
+ * and be filed under the number an editor actually assigned it.
  *
  * Targets are keyed by PR number rather than proposal number: "the proposal at
  * 8361" is ambiguous when two PRs claim it, whereas "the proposal from PR #12081"
@@ -429,7 +444,7 @@ async function applyAliases(
   const entries = JSON.parse(raw) as AliasEntry[];
 
   for (const entry of entries) {
-    const label = `alias ${entry.alias}`;
+    const label = `alias entry ${entry.canonical}`;
     if (!entry.reason?.trim()) {
       errors.push(`${label}: missing "reason" -- an undocumented alias is unauditable`);
       continue;
@@ -440,28 +455,42 @@ async function applyAliases(
         ? unmerged.find((p) => p.pr === entry.target.pr && p.prRepo === entry.target.repo)
         : merged.get(entry.target.n!);
     if (!target) {
-      // Loud rather than silent: a stale alias means the PR merged, was closed,
-      // or renamed its file, and the entry needs a human decision.
+      // Loud rather than silent: a stale entry means the PR merged, was closed,
+      // or renamed its file, and it needs a human decision.
       errors.push(`${label}: target ${JSON.stringify(entry.target)} not found`);
       continue;
     }
 
-    const primaryOwner =
-      merged.get(entry.alias) ?? unmerged.find((p) => p.n === entry.alias);
-    if (primaryOwner) {
-      if (primaryOwner === target) {
-        log(`    ${label} is now the target's own number -- alias redundant, skipping`);
-      } else {
-        errors.push(
-          `${label}: already the primary number of ${JSON.stringify(primaryOwner.t)} -- ` +
-            `real conflict, resolve by hand`,
-        );
-      }
+    // Two proposals both claiming to canonically be one number is a genuine
+    // conflict a human has to resolve.
+    const canonicalOwner =
+      merged.get(entry.canonical) ??
+      unmerged.find((p) => p !== target && p.n === entry.canonical);
+    if (canonicalOwner) {
+      errors.push(
+        `${label}: ${entry.canonical} is already the number of ` +
+          `${JSON.stringify(canonicalOwner.t)} -- resolve by hand`,
+      );
       continue;
     }
 
-    target.aka = [...(target.aka ?? []), entry.alias].sort((a, b) => a - b);
-    log(`    ${entry.alias} -> ${JSON.stringify(target.t)} (PR #${target.pr ?? '-'})`);
+    // Keep the filename number so the source link keeps resolving; the file is
+    // often still named after the number the author originally self-assigned.
+    if (target.n !== entry.canonical) target.prFileN = target.n;
+    target.n = entry.canonical;
+    target.aka = [...new Set(entry.alsoKnownAs)].filter((n) => n !== target.n).sort((a, b) => a - b);
+
+    // An alias overlapping another proposal's number is expected, not an error:
+    // that is exactly the contested case the tooltip is designed to show.
+    for (const n of target.aka) {
+      const other = [...merged.values(), ...unmerged].find((p) => p !== target && p.n === n);
+      if (other) log(`    note: ${n} is also claimed by ${JSON.stringify(other.t)}`);
+    }
+    log(
+      `    PR #${target.pr ?? '-'} ${JSON.stringify(target.t)} -> EIP-${target.n}` +
+        `${target.aka.length ? ` (also ${target.aka.join(', ')})` : ''}` +
+        `${target.prFileN ? `, file eip-${target.prFileN}.md` : ''}`,
+    );
   }
   return errors;
 }

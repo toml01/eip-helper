@@ -411,6 +411,10 @@ try {
     check('each claimant is badged UNMERGED', (t.match(/UNMERGED/g) ?? []).length >= 2);
     check('claimants link to their pull requests', t.includes('Pull request'));
     check('contested tooltip offers no dead Spec link', !t.includes('| Spec |'));
+    // Hovering the stale 8361 must still lead with 8363 for that claimant, so the
+    // reader is corrected rather than confirmed.
+    check('renumbered claimant is headed by its canonical number', t.includes('EIP-8363'));
+    check('renumbered claimant notes the stale number', t.includes('also EIP-8361'));
     await page.screenshot({ path: path.join(HERE, 'contested-shot.png') });
 
     // A contested number stacks several full entries, so the card must cap and
@@ -437,9 +441,9 @@ try {
   if (await hoverIn('#aliased')) {
     const t = await waitForTooltip('also EIP-8361');
     console.log(`      tooltip: ${summarize(t)}`);
-    check('alias resolves to the same proposal', t.includes('Tapered Issuance Burn'));
-    check('alias tooltip names the other number', t.includes('also EIP-8361'));
-    check('alias tooltip is headed by the hovered number', t.includes('EIP-8363'));
+    check('canonical number resolves to the proposal', t.includes('Tapered Issuance Burn'));
+    check('tooltip names the stale number as an alias', t.includes('also EIP-8361'));
+    check('tooltip is headed by the canonical number', t.includes('EIP-8363'));
   } else {
     check('alias resolves to the same proposal', false, 'no highlight to hover');
   }

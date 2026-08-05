@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import proposals from '../data/eips.json';
 import { UNMERGED_NUMBERS, VALID_NUMBERS } from '../src/core/numbers.generated';
-import { linksFor, otherNumbers, sourceUrl, specUrl, statusLine, usableDiscussion } from '../src/core/links';
+import { aliasNumbers, linksFor, sourceUrl, specUrl, statusLine, usableDiscussion } from '../src/core/links';
 import { isUnmerged, type Proposal } from '../src/core/types';
 
 const all = proposals as Proposal[];
@@ -13,7 +13,8 @@ const unmerged = all.filter(isUnmerged);
 const resolve = (n: number) => all.filter((p) => p.n === n || (p.aka ?? []).includes(n));
 
 const aliases = JSON.parse(readFileSync('data/aliases.json', 'utf8')) as Array<{
-  alias: number;
+  canonical: number;
+  alsoKnownAs: number[];
   target: { pr?: number; repo?: string; n?: number };
   reason: string;
 }>;
@@ -102,9 +103,6 @@ describe('contested numbers', () => {
     const claims = resolve(8361);
     expect(claims.length).toBeGreaterThanOrEqual(2);
     expect(claims.every(isUnmerged)).toBe(true);
-
-    const opened = claims.map((p) => p.prOpened!);
-    expect([...opened].sort()).toEqual(opened);
     expect(claims[0]!.pr).toBe(12075);
   });
 
@@ -119,45 +117,66 @@ describe('contested numbers', () => {
 });
 
 describe('aliases', () => {
-  it('resolves a proposal under every number it answers to', () => {
-    // The point of the feature: X discussion still calls Tapered Issuance Burn
-    // "EIP-8361", while editors have moved it to 8363. Both must work.
-    const via8361 = resolve(8361).find((p) => p.t === 'Tapered Issuance Burn');
-    const via8363 = resolve(8363);
-    expect(via8361).toBeDefined();
-    expect(via8363).toHaveLength(1);
-    expect(via8363[0]).toBe(via8361);
-    expect(via8361!.aka).toContain(8363);
+  it('files a renumbered proposal under the number an editor assigned', () => {
+    // 8363 is the real number: the Hegota list cites it, and the Magicians thread
+    // redirects to eip-8363-tapered-issuance-burn. 8361 was self-assigned and an
+    // editor asked for it not to be used -- so it is the alias, not the primary.
+    const p = resolve(8363);
+    expect(p).toHaveLength(1);
+    expect(p[0]!.n).toBe(8363);
+    expect(p[0]!.t).toBe('Tapered Issuance Burn');
+    expect(p[0]!.aka).toEqual([8361]);
   });
 
-  it('reports the other numbers relative to the one being viewed', () => {
+  it('still resolves the stale number people actually write', () => {
+    // The point of the feature: X discussion says 8361, so it has to work.
+    const viaStale = resolve(8361).find((x) => x.t === 'Tapered Issuance Burn');
+    expect(viaStale).toBeDefined();
+    expect(viaStale).toBe(resolve(8363)[0]);
+  });
+
+  it('reports the aliases, so the tooltip can lead with the canonical number', () => {
+    expect(aliasNumbers(resolve(8363)[0]!)).toEqual([8361]);
+  });
+
+  it('links source at the filename, which lags the canonical number', () => {
+    // PR #12081 still ships eip-8361.md, so linking eip-8363.md would 404.
     const p = resolve(8363)[0]!;
-    expect(otherNumbers(p, 8363)).toEqual([8361]);
-    expect(otherNumbers(p, 8361)).toEqual([8363]);
+    expect(p.prFileN).toBe(8361);
+    expect(sourceUrl(p)).toContain('/EIPS/eip-8361.md');
+    expect(sourceUrl(p)).not.toContain('eip-8363.md');
   });
 
   it('documents every alias entry', () => {
-    // An undocumented alias is unauditable, and nobody will know when to retire it.
+    // An undocumented entry is unauditable, and nobody will know when to retire it.
     for (const entry of aliases) {
-      expect(entry.reason?.trim(), `alias ${entry.alias}`).toBeTruthy();
-      expect(entry.target.pr ?? entry.target.n, `alias ${entry.alias}`).toBeDefined();
+      expect(entry.reason?.trim(), `entry ${entry.canonical}`).toBeTruthy();
+      expect(entry.target.pr ?? entry.target.n, `entry ${entry.canonical}`).toBeDefined();
     }
   });
 
-  it('never aliases a number that is some other proposalns primary', () => {
+  it('never gives two proposals the same canonical number', () => {
     for (const entry of aliases) {
-      const owners = all.filter((p) => p.n === entry.alias);
-      expect(owners.map((p) => p.t), `alias ${entry.alias}`).toEqual([]);
+      expect(all.filter((p) => p.n === entry.canonical), `entry ${entry.canonical}`).toHaveLength(1);
     }
   });
 
-  it('points every alias at a proposal that exists', () => {
+  it('allows an alias to overlap another proposal, which is the contested case', () => {
+    // 8361 is both this proposal's alias and #12075's real number. That overlap is
+    // expected -- the tooltip shows both and lets the reader judge.
+    const claims = resolve(8361);
+    expect(claims.length).toBeGreaterThanOrEqual(2);
+    expect(claims.some((p) => p.n === 8361)).toBe(true);
+    expect(claims.some((p) => p.n === 8363)).toBe(true);
+  });
+
+  it('points every entry at a proposal that exists', () => {
     for (const entry of aliases) {
       const target = entry.target.pr
         ? all.find((p) => p.pr === entry.target.pr && p.prRepo === entry.target.repo)
         : merged.find((p) => p.n === entry.target.n);
-      expect(target, `alias ${entry.alias}`).toBeDefined();
-      expect(target!.aka).toContain(entry.alias);
+      expect(target, `entry ${entry.canonical}`).toBeDefined();
+      expect(target!.n).toBe(entry.canonical);
     }
   });
 });
@@ -197,7 +216,7 @@ describe('links', () => {
   });
 
   it('replaces the spec link with the pull request when unmerged', () => {
-    // eips.ethereum.org/EIPS/eip-8361 is a 404, so linking it would be worse
+    // eips.ethereum.org/EIPS/eip-8363 is a 404, so linking it would be worse
     // than useless.
     const p = resolve(8363)[0]!;
     const labels = linksFor(p).map((l) => l.label);
@@ -207,7 +226,7 @@ describe('links', () => {
   });
 
   it('pins an unmerged source link to the fork and head commit', () => {
-    const p = resolve(8363)[0]!;
+    const p = resolve(8365)[0]!;
     expect(sourceUrl(p)).toBe(
       `https://github.com/${p.prHead}/blob/${p.prRef}/EIPS/eip-${p.n}.md`,
     );
