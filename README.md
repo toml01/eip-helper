@@ -175,20 +175,51 @@ It auto-detects a Chromium-based browser; set `CHROME_PATH` to override.
 
 ## Known limitations
 
-- **References split across elements are missed.** Matching runs per text node,
-  so `EIP-<b>7702</b>` does not match. Single text nodes are the overwhelmingly
-  common case.
+- **References split across inline elements are missed** — matching runs per text
+  node, so `<b>EIP</b>-7702` does not match. Measured across 10 real pages and
+  **1291 references, this cost exactly 1 match (0.08%)**: a `<b>`-wrapped search
+  term on a DuckDuckGo results page. Notably GitHub's syntax-highlighted
+  markdown view — 972 references on one page — splits nothing, because it keeps
+  plain text runs in single nodes. Not worth fixing at that rate; see
+  [Roadmap](#roadmap) for what fixing it would take.
 - **No keyboard access to the tooltip.** Highlights are not DOM nodes and cannot
   take focus. Hover is pointer-only for now; a keyboard path is planned.
+- **New content is decorated after a ~300 ms debounce**, so during fast
+  continuous scrolling there is a brief window where fresh references are not yet
+  underlined.
+- **A very long non-virtualized feed can hit the 2000-match cap.** At the density
+  measured below that is roughly 6000 posts. Feeds that drop offscreen nodes
+  (Twitter, most modern timelines) stay well under it.
 - **Chromium only.** `CSS.highlights` is needed for painting. A Firefox port is
   plausible since hover no longer depends on a Chrome-only API.
 - **Data goes stale between releases**, by design — the dataset is bundled so
   that browsing triggers no network requests.
 
+## Dynamic pages
+
+Content added after load is picked up by a `MutationObserver` (debounced 300 ms,
+then run in an idle callback). Measured on a synthetic timeline that appends 250
+posts per batch:
+
+| Feed | Posts | References | All highlighted | Latency | Scan cost |
+| --- | --- | --- | --- | --- | --- |
+| Growing | 2000 | 668 | yes | ~310 ms | ~2 ms |
+| Virtualized | 400 (steady) | 134 | yes | ~1 ms | ~0.5 ms |
+
+The rescan re-walks the whole document rather than just the mutated subtree,
+which sounded expensive but measures at ~2 ms over 2000 text nodes — so
+incremental rescanning is not worth the complexity yet.
+
 ## Roadmap
 
 - Hotkey palette: fuzzy-search proposals by topic and insert the reference at the
   cursor
+- Cross-element matching, if search-results pages ever matter: group consecutive
+  text nodes within each leaf block into one string, keeping an
+  offset → (node, offset) map so matches can be translated back into Ranges
+  (which may span nodes). Must not flatten across block boundaries, or
+  `…the EIP.` + `7702 is…` in adjacent paragraphs would falsely join. Roughly one
+  module plus tests
 - New-activity hints for discussions (needs host permissions — a deliberate,
   separate opt-in)
 - Related-proposal graph from the `requires` field, already captured in the data
