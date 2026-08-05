@@ -1,0 +1,27 @@
+{
+  "name": "eip-helper",
+  "version": "0.1.0",
+  "description": "Chrome extension that highlights EIP/ERC references on any page and shows the full title, status, and links on hover.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "compile": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "data:build": "tsx scripts/build-dataset.ts",
+    "postinstall": "wxt prepare"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.10.2",
+    "js-yaml": "^4.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "wxt": "^0.21.3"
+  }
+}
