@@ -228,7 +228,29 @@ try {
   check('years never matched', (await scoped('#years')).length === 0, JSON.stringify(await scoped('#years')));
   check('currency/quantities not matched', (await scoped('#amounts')).length === 0, JSON.stringify(await scoped('#amounts')));
   check('slugs and hex not matched', (await scoped('#slug')).length === 0, JSON.stringify(await scoped('#slug')));
-  check('already-linked reference not decorated', (await scoped('#alreadylinked')).length === 0);
+  // Deliberately inverted from the original expectation: a reference that is
+  // already a link to the spec is still worth decorating, because the tooltip
+  // shows the title and status that the link text does not. See #google-result.
+  check(
+    'reference that is already a spec link is still decorated',
+    (await scoped('#alreadylinked')).includes('EIP-1559'),
+    JSON.stringify(await scoped('#alreadylinked')),
+  );
+  check(
+    'Google search result title is decorated',
+    (await scoped('#google-result')).some((t) => t.replace(/\s+/g, '') === 'EIP-8081'),
+    JSON.stringify(await scoped('#google-result')),
+  );
+  check(
+    'never assembles a reference across a tight block exit',
+    (await scoped('#block-exit-tight')).length === 0,
+    JSON.stringify(await scoped('#block-exit-tight')),
+  );
+  check(
+    'never assembles a reference across a block exit',
+    (await scoped('#block-exit')).length === 0,
+    JSON.stringify(await scoped('#block-exit')),
+  );
   check('contenteditable skipped', (await scoped('#editable')).length === 0);
 
   // --- 4b. references split across inline elements ----------------------
@@ -269,18 +291,12 @@ try {
   );
 
   // --- 6. hover shows the tooltip with real metadata --------------------
-  const rect = await page.evaluate(() => {
-    const h = CSS.highlights.get('eip-ref');
-    const range = [...h].find((r) => r.toString() === 'EIP-7702');
-    const b = range.getBoundingClientRect();
-    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-  });
-  // `steps` emits a stream of mousemove events, the way a real pointer does.
+  // `steps` emits a stream of mousemove events, the way a real pointer does; a
+  // single synthetic move is not a fair simulation of hovering.
   const hover = async (pt) => {
     await page.mouse.move(pt.x - 60, pt.y, { steps: 3 });
     await page.mouse.move(pt.x, pt.y, { steps: 6 });
   };
-  await hover(rect);
 
   // The tooltip lives in a CLOSED shadow root, so JS in the page cannot reach
   // it. Pierce it over CDP instead.
@@ -326,6 +342,35 @@ try {
     }
   };
 
+  /**
+   * Hovers the first reference inside `sel`. Every hover check goes through this
+   * so they all get the same treatment: scroll into view (the fixture is taller
+   * than the viewport), park the pointer clear of any highlight and wait out the
+   * hide grace period so stale content cannot satisfy the next assertion, then
+   * re-nudge once if the tooltip has not appeared -- CI runners are slow enough
+   * that a first metadata lookup can outlast the dwell.
+   */
+  const hoverIn = async (sel) => {
+    await page.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), sel);
+    await new Promise((r) => setTimeout(r, 400));
+    const pt = await page.evaluate((s) => {
+      const h = CSS.highlights.get('eip-ref');
+      const el = document.querySelector(s);
+      const range = [...h].find((r) => el.contains(r.startContainer));
+      if (!range) return null;
+      const b = range.getBoundingClientRect();
+      return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    }, sel);
+    if (!pt) return null;
+
+    await page.mouse.move(5, 5, { steps: 2 });
+    await new Promise((r) => setTimeout(r, 400));
+    await hover(pt);
+    if (!(await waitFor(tooltipVisible, 2500))) await hover(pt);
+    return pt;
+  };
+
+  await hoverIn('#prefixed');
   const shadowText = await waitForTooltip('Set Code for EOAs');
   console.log(`      tooltip: ${summarize(shadowText)}`);
 
@@ -338,46 +383,23 @@ try {
   check('tooltip shows links', ['Spec', 'Discussion', 'Source'].every((l) => shadowText.includes(l)));
 
   // --- 7. EIP/ERC mix-up note ------------------------------------------
-  const r4337 = await page.evaluate(() => {
-    const h = CSS.highlights.get('eip-ref');
-    const range = [...h].find((r) => r.toString() === 'EIP-4337');
-    const b = range.getBoundingClientRect();
-    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-  });
-  await hover(r4337);
+  await hoverIn('#crosskind');
   const t2 = await waitForTooltip('Referenced as EIP-4337');
   console.log(`      tooltip: ${summarize(t2)}`);
   check('EIP-4337 resolves to canonical ERC-4337', t2.includes('ERC-4337'));
   check('notes the EIP/ERC mix-up', t2.includes('Referenced as EIP-4337'));
 
   // --- 7b. open-PR proposals -------------------------------------------
-  const hoverIn = async (sel) => {
-    // The fixture is taller than the viewport, so the target must be scrolled
-    // into view before its rect is a reachable pointer position. Scrolling also
-    // hides any open tooltip, so settle before measuring.
-    await page.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), sel);
-    await new Promise((r) => setTimeout(r, 400));
-    const pt = await page.evaluate((s) => {
-      const h = CSS.highlights.get('eip-ref');
-      const el = document.querySelector(s);
-      const range = [...h].find((r) => el.contains(r.startContainer));
-      if (!range) return null;
-      const b = range.getBoundingClientRect();
-      return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-    }, sel);
-    if (!pt) return null;
-    // Park the pointer away from any highlight and wait out the hide grace
-    // period, so a stale tooltip cannot satisfy the next assertion.
-    await page.mouse.move(5, 5, { steps: 2 });
-    await new Promise((r) => setTimeout(r, 400));
-    await hover(pt);
-
-    // CI runners are slow enough that the first metadata lookup can outlast the
-    // dwell; re-nudge once rather than reporting a spurious failure.
-    const shown = await waitFor(tooltipVisible, 2500);
-    if (!shown) await hover(pt);
-    return pt;
-  };
+  // The payoff for removing the already-linked guard: hovering a Google result
+  // title now shows the proposal without leaving the results page.
+  if (await hoverIn('#google-result')) {
+    const t = await waitForTooltip('Hardfork Meta');
+    console.log(`      tooltip: ${summarize(t)}`);
+    check('Google result hover shows the proposal', t.includes('Hardfork Meta - Hegotá'));
+    await page.screenshot({ path: path.join(HERE, 'google-shot.png') });
+  } else {
+    check('Google result hover shows the proposal', false, 'no highlight to hover');
+  }
 
   check('open-PR reference is highlighted', (await scoped('#contested')).includes('EIP-8361'));
   check('alias number is highlighted', (await scoped('#aliased')).includes('EIP-8363'));

@@ -69,6 +69,37 @@
       <p>7702 posts were written last year.</p>
     </div>
 
+    <!--
+      The same hazard without a wrapping element on the trailing text: the walker
+      sees no block element *entering* between the two runs, so it must notice
+      that it left one.
+    -->
+    <div id="block-exit">
+      <p>The end of a sentence mentioning EIP</p>
+      7702 unrelated words follow.
+    </div>
+
+    <!-- Same, with no whitespace at the boundary, so nothing accidental saves us. -->
+    <div id="block-exit-tight"><p>Another sentence ending in EIP</p>7702 words follow.</div>
+
+    <!--
+      Real Google search-result markup: the title sits in an h3 wrapped in an
+      anchor pointing at the spec. This used to be suppressed as "already a link
+      to the proposal", which is wrong here -- the hover is the whole point.
+    -->
+    <div id="google-result">
+      <a
+        href="https://eips.ethereum.org/EIPS/eip-8081"
+        jsname="UWckNb"
+        data-ved="2ahUKEwi"
+        ><br /><h3 class="LC20lb MBeuO DKV0Md">EIP-8081: Hardfork Meta - Hegotá</h3>
+        <div class="notranslate TbwUpd NJjxre iUh30 ojE3Fb">
+          <span class="H9lube"><div class="eqA2re NjwKYd"></div></span>
+          <div><span class="VuuXrf">Ethereum Improvement Proposals</span></div>
+        </div></a
+      >
+    </div>
+
     <!-- Open-PR proposals: 8361 is claimed by two rival PRs, 8363 is a curated
          alias for one of them. -->
     <p id="contested">Debate about EIP-8361 continues.</p>
