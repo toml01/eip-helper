@@ -1,5 +1,6 @@
 import { isValidNumber, lookup } from '../core/dataset';
 import { findMatches, isEthContext } from '../core/match';
+import { buildSegment, locate, partsCovering, type Segment } from '../core/segments';
 import { getSettings, isSiteEnabled, onSettingsChanged } from '../core/settings';
 import type { Match, Settings } from '../core/types';
 import { Tooltip } from '../ui/tooltip';
@@ -13,6 +14,7 @@ const RESCAN_DEBOUNCE_MS = 300;
 const HOVER_DWELL_MS = 120;
 const HOVER_GRACE_MS = 200;
 
+/** Subtrees that are never scanned. */
 const SKIP_TAGS = new Set([
   'SCRIPT',
   'STYLE',
@@ -28,10 +30,24 @@ const SKIP_TAGS = new Set([
   'CANVAS',
 ]);
 
-/** A highlighted reference and the range painting it. */
+/**
+ * Elements that end an inline run. Deliberately a static tag list rather than
+ * getComputedStyle: resolving styles for every element would be far too
+ * expensive for a scan that reruns on every DOM mutation, and this is both
+ * faster and deterministic.
+ */
+const BLOCK_TAGS = new Set([
+  'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'BODY', 'BR', 'BUTTON', 'DD',
+  'DETAILS', 'DIALOG', 'DIV', 'DL', 'DT', 'FIELDSET', 'FIGCAPTION', 'FIGURE',
+  'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER', 'HR', 'LI',
+  'MAIN', 'NAV', 'OL', 'P', 'PRE', 'SECTION', 'SUMMARY', 'TABLE', 'TBODY',
+  'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
+]);
+
+/** Hosts whose links count as pointing at the proposal itself. */
+const SPEC_HOSTS = /(?:^|\.)(?:eips\.ethereum\.org|ercs\.ethereum\.org|github\.com)$/i;
+
 interface Hit {
-  start: number;
-  end: number;
   match: Match;
   range: Range;
 }
@@ -53,7 +69,10 @@ async function start() {
   let settings = await getSettings();
   const tooltip = new Tooltip();
 
-  /** Hits grouped by text node, which is how the pointer is mapped to a match. */
+  /**
+   * Hits indexed by every text node they cover. A hit can span several nodes,
+   * so hovering any part of one has to resolve to the same match.
+   */
   let byNode = new Map<Text, Hit[]>();
   let observer: MutationObserver | null = null;
   let rescanTimer: number | undefined;
@@ -65,34 +84,40 @@ async function start() {
       return;
     }
 
-    const nodes = collectTextNodes(tooltip.hostElement);
+    const segments = collectSegments(tooltip.hostElement);
 
     // Tier 1 first, so "does this page discuss Ethereum at all?" is answered
     // before deciding whether bare numbers are plausible here.
-    const firstPass = matchNodes(nodes, { allowBare: false });
+    const firstPass = matchSegments(segments, false);
     const allowBare =
       settings.bareNumbers && isEthContext(location.hostname, firstPass.length > 0);
-    const found = allowBare ? matchNodes(nodes, { allowBare: true }) : firstPass;
+    const found = allowBare ? matchSegments(segments, true) : firstPass;
 
     if (found.length === 0) {
       CSS.highlights.delete(HIGHLIGHT_NAME);
       return;
     }
 
-    const capped = found.slice(0, MAX_MATCHES);
     const rangeList: Range[] = [];
-    for (const { node, match } of capped) {
+    for (const { segment, match } of found.slice(0, MAX_MATCHES)) {
+      const from = locate(segment, match.start);
+      const to = locate(segment, match.end);
+      if (!from || !to) continue;
+
       const range = document.createRange();
       try {
-        range.setStart(node, match.start);
-        range.setEnd(node, match.end);
+        range.setStart(from.node, from.offset);
+        range.setEnd(to.node, to.offset);
       } catch {
-        continue; // Node changed under us; the next rescan picks it up.
+        continue; // Nodes changed under us; the next rescan picks it up.
       }
-      const hits = byNode.get(node);
-      const hit: Hit = { start: match.start, end: match.end, match, range };
-      if (hits) hits.push(hit);
-      else byNode.set(node, [hit]);
+
+      const hit: Hit = { match, range };
+      for (const node of partsCovering(segment, match.start, match.end)) {
+        const list = byNode.get(node);
+        if (list) list.push(hit);
+        else byNode.set(node, [hit]);
+      }
       rangeList.push(range);
     }
 
@@ -100,7 +125,7 @@ async function start() {
 
     // Warm the metadata cache for what is on the page, so the first hover has
     // no latency. Pages with no matches never trigger this.
-    void lookup([...new Set(capped.map((c) => c.match.n))]);
+    void lookup([...new Set(found.map((f) => f.match.n))]);
   };
 
   const scheduleRescan = () => {
@@ -186,9 +211,8 @@ async function start() {
  * Deliberately does NOT use CSS.highlights.highlightsFromPoint. That API is the
  * purpose-built one, but it is Chrome-135-only and was observed present-yet-
  * always-empty in a current Chromium build (Brave 151), which would silently
- * disable hover entirely. Resolving the caret position and then confirming
- * against the range's own painted rects relies only on long-standing APIs and
- * works the same everywhere.
+ * disable hover entirely. Resolving the caret position and confirming it
+ * against the range relies only on long-standing APIs.
  */
 function hitTest(x: number, y: number, byNode: Map<Text, Hit[]>): Hit | null {
   const caret = caretAt(x, y);
@@ -198,22 +222,17 @@ function hitTest(x: number, y: number, byNode: Map<Text, Hit[]>): Hit | null {
   if (!hits) return null;
 
   for (const hit of hits) {
-    // caretAt snaps to the nearest position, so an offset inside the match is
-    // necessary but not sufficient -- confirm the pointer is really over the
-    // painted text.
-    if (caret.offset >= hit.start && caret.offset <= hit.end && containsPoint(hit.range, x, y)) {
+    // isPointInRange handles ranges spanning several nodes, which matters now
+    // that a match can be assembled from multiple inline runs. The geometry
+    // check is still needed because the caret snaps to the nearest position.
+    if (hit.range.isPointInRange(caret.node, caret.offset) && containsPoint(hit.range, x, y)) {
       return hit;
     }
   }
   return null;
 }
 
-interface Caret {
-  node: Text;
-  offset: number;
-}
-
-function caretAt(x: number, y: number): Caret | null {
+function caretAt(x: number, y: number): { node: Text; offset: number } | null {
   const doc = document as Document & {
     caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
     caretRangeFromPoint?: (x: number, y: number) => Range | null;
@@ -238,54 +257,97 @@ function containsPoint(range: Range, x: number, y: number): boolean {
   return false;
 }
 
-function collectTextNodes(tooltipHost: Element | null): Text[] {
-  const out: Text[] = [];
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const text = node.nodeValue;
-      // Cheapest possible rejection: no digits means no possible reference.
-      if (!text || text.length < 2 || !/\d/.test(text)) return NodeFilter.FILTER_REJECT;
-      const parent = (node as Text).parentElement;
-      if (!parent) return NodeFilter.FILTER_REJECT;
-      if (tooltipHost && tooltipHost.contains(parent)) return NodeFilter.FILTER_REJECT;
-      for (let el: Element | null = parent; el; el = el.parentElement) {
-        if (SKIP_TAGS.has(el.tagName)) return NodeFilter.FILTER_REJECT;
-        // Editing surfaces: painting into them is harmless, but highlights
-        // interact badly with carets and selections, and appearing to corrupt
-        // someone's draft is not worth the coverage.
-        if (el instanceof HTMLElement && el.isContentEditable) return NodeFilter.FILTER_REJECT;
-      }
-      return NodeFilter.FILTER_ACCEPT;
+/**
+ * Walks the document, grouping consecutive inline text runs into segments and
+ * breaking at every block-level element.
+ *
+ * The break is the safety property: without it, a paragraph ending in "EIP"
+ * followed by one starting with "7702" would read as a reference.
+ */
+function collectSegments(tooltipHost: Element | null): Array<Segment<Text>> {
+  const segments: Array<Segment<Text>> = [];
+  let runs: Array<{ node: Text; text: string }> = [];
+
+  const flush = () => {
+    if (runs.length === 0) return;
+    const segment = buildSegment(runs);
+    runs = [];
+    // Rejection happens after joining, not per node: when a site splits a
+    // reference, the run holding "EIP" contains no digit at all, so a per-node
+    // digit filter would discard exactly the runs that need joining.
+    if (/\d/.test(segment.text)) segments.push(segment);
+  };
+
+  const walker = document.createTreeWalker(
+    document.body,
+    NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
+    {
+      acceptNode(node) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as Element;
+          if (SKIP_TAGS.has(el.tagName)) return NodeFilter.FILTER_REJECT;
+          // Editing surfaces: painting into them is harmless, but highlights
+          // interact badly with carets and selections, and appearing to
+          // corrupt someone's draft is not worth the coverage.
+          if (el instanceof HTMLElement && el.isContentEditable) return NodeFilter.FILTER_REJECT;
+          if (tooltipHost && (tooltipHost === el || tooltipHost.contains(el))) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          // Block elements are visited only to mark a boundary; inline ones are
+          // transparent, so their text joins the surrounding run.
+          return BLOCK_TAGS.has(el.tagName) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+        }
+        return node.nodeValue ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
     },
-  });
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) out.push(n as Text);
-  return out;
+  );
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeType === Node.ELEMENT_NODE) flush();
+    else runs.push({ node: node as Text, text: node.nodeValue ?? '' });
+  }
+  flush();
+  return segments;
 }
 
-function matchNodes(
-  nodes: Text[],
-  opts: { allowBare: boolean },
-): Array<{ node: Text; match: Match }> {
-  const out: Array<{ node: Text; match: Match }> = [];
-  for (const node of nodes) {
-    const text = node.nodeValue;
-    if (!text) continue;
-    const matches = findMatches(text, { isValid: isValidNumber, allowBare: opts.allowBare });
-    if (matches.length === 0) continue;
-    const link = node.parentElement?.closest('a[href]') as HTMLAnchorElement | null;
-    for (const match of matches) {
-      // Don't decorate a reference that is already a link to the same
-      // proposal -- common on eips.ethereum.org and in rendered markdown.
-      if (link && linksToProposal(link.getAttribute('href') ?? '', match.n)) continue;
-      out.push({ node, match });
+function matchSegments(
+  segments: Array<Segment<Text>>,
+  allowBare: boolean,
+): Array<{ segment: Segment<Text>; match: Match }> {
+  const out: Array<{ segment: Segment<Text>; match: Match }> = [];
+  for (const segment of segments) {
+    for (const match of findMatches(segment.text, { isValid: isValidNumber, allowBare })) {
+      if (alreadyLinked(segment, match)) continue;
+      out.push({ segment, match });
     }
     if (out.length >= MAX_MATCHES) break;
   }
   return out;
 }
 
-function linksToProposal(href: string, n: number): boolean {
-  return new RegExp(`(?:eip|erc)[-_]?${n}(?:\\D|$)`, 'i').test(href);
+/**
+ * Whether this reference is already a link to the proposal itself, in which
+ * case decorating it adds nothing. Common on eips.ethereum.org and in rendered
+ * markdown.
+ *
+ * The host check matters: X links "#EIP7702" to its own hashtag page, whose
+ * href contains "EIP7702" but has nothing to do with the spec. Matching on the
+ * number alone would silently skip every hashtagged reference.
+ */
+function alreadyLinked(segment: Segment<Text>, match: Match): boolean {
+  const start = locate(segment, match.start);
+  const anchor = start?.node.parentElement?.closest('a[href]') as HTMLAnchorElement | null;
+  const href = anchor?.getAttribute('href');
+  if (!href) return false;
+
+  try {
+    const url = new URL(href, location.href);
+    if (!SPEC_HOSTS.test(url.hostname)) return false;
+    const rest = `${url.pathname}${url.search}${url.hash}`;
+    return new RegExp(`(?:eip|erc)[-_]?${match.n}(?:\\D|$)`, 'i').test(rest);
+  } catch {
+    return false;
+  }
 }
 
 function injectStyle(settings: Settings) {

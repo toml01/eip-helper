@@ -32,6 +32,43 @@
 
     <p id="nodigits">This paragraph has no numbers at all.</p>
 
+    <!--
+      Real markup copied from X (Twitter) search results. Search bolds the
+      matched term, which splits "EIP-7702" across three text nodes, and
+      interleaves @mention wrappers between inline runs. Matching per text node
+      cannot see references like this.
+    -->
+    <div id="x-search" dir="auto" lang="en" data-testid="tweetText"
+      ><span class="css-1jxf684 r-poiln3 r-b88u0q">EIP</span
+      ><span class="css-1jxf684 r-poiln3">-</span
+      ><span class="css-1jxf684 r-poiln3 r-b88u0q">7702</span
+      ><span class="css-1jxf684 r-poiln3"> went live in may 2025. Today </span
+      ><div class="css-g5y9jx r-xoduu5"
+        ><span class="r-18u37iz"><a dir="ltr" href="/FireblocksHQ" role="link">@FireblocksHQ</a></span
+      ></div
+      ><span class="css-1jxf684 r-poiln3"> and </span
+      ><div class="css-g5y9jx r-xoduu5"
+        ><span class="r-18u37iz"><a dir="ltr" href="/MetaMask" role="link">@MetaMask</a></span
+      ></div
+      ><span class="css-1jxf684 r-poiln3"> use it, yet most consider it a failed </span
+      ><span class="css-1jxf684 r-poiln3 r-b88u0q">EIP</span
+      ><span class="css-1jxf684 r-poiln3">.</span
+    ></div>
+
+    <!-- Same splitting, with no separator: "ERC" + "20". -->
+    <div id="x-search-2" dir="auto" lang="en" data-testid="tweetText"
+      ><span class="r-b88u0q">ERC</span><span>20</span><span> approvals are still a footgun.</span
+    ></div>
+
+    <!--
+      A reference must NOT be assembled across a block boundary: the sentence
+      ends with "EIP" and the next paragraph opens with a number.
+    -->
+    <div id="block-boundary">
+      <p>Nothing more to say about this EIP</p>
+      <p>7702 posts were written last year.</p>
+    </div>
+
     <div id="late"></div>
     <script>
       // Simulates client-side rendering, to check the MutationObserver rescan.

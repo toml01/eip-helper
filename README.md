@@ -101,6 +101,32 @@ bare number must clear every one of these:
 - not hex or a hyphenated identifier (`0x7702`, `build-7702-rc1`)
 - resolves to a real proposal
 
+### References split across elements
+
+Sites that bold a search term split the reference apart. X search renders
+`EIP-7702` as three separate text nodes:
+
+```html
+<span class="…r-b88u0q">EIP</span><span>-</span><span class="…r-b88u0q">7702</span>
+```
+
+Matching each text node alone can never see that. So consecutive **inline** text
+runs are concatenated into one string, matched, and every hit is mapped back to
+the node and offset it started and ended at — a `Range` may legitimately span
+nodes, but it still needs real nodes and offsets, so a flattened string alone is
+not enough. `src/core/segments.ts` holds the mapping and is generic over the node
+type, which makes it unit-testable without a DOM.
+
+The safety property is that runs are **broken at every block-level element**.
+Without that, a paragraph ending in "EIP" followed by one starting with "7702"
+would be read as a reference. Block detection uses a static tag list rather than
+`getComputedStyle`, because resolving styles for every element on every rescan
+is far too expensive.
+
+One consequence: the per-node "skip text without digits" shortcut had to go, as
+the run holding `EIP` contains no digits at all. Measured cost is a few
+milliseconds — see [Performance](#performance).
+
 ### Shared number namespace
 
 EIPs and ERCs share one number space, so a number identifies exactly one
@@ -187,13 +213,14 @@ both the hover screenshot and the packaged zip.
 
 ## Known limitations
 
-- **References split across inline elements are missed** — matching runs per text
-  node, so `<b>EIP</b>-7702` does not match. Measured across 10 real pages and
-  **1291 references, this cost exactly 1 match (0.08%)**: a `<b>`-wrapped search
-  term on a DuckDuckGo results page. Notably GitHub's syntax-highlighted
-  markdown view — 972 references on one page — splits nothing, because it keeps
-  plain text runs in single nodes. Not worth fixing at that rate; see
-  [Roadmap](#roadmap) for what fixing it would take.
+- **Only proposals merged into `master` are recognised.** EIP numbers are
+  assigned while a proposal is still an open pull request, and public discussion
+  clusters in exactly that pre-merge window — so the newest and most-talked-about
+  proposals are invisible. At the time of writing **87 numbers live in open PRs
+  but not in the dataset**, EIP-8361 among them (PRs
+  [#12081](https://github.com/ethereum/EIPs/pull/12081) and
+  [#12075](https://github.com/ethereum/EIPs/pull/12075)). This is the largest
+  real coverage gap.
 - **No keyboard access to the tooltip.** Highlights are not DOM nodes and cannot
   take focus. Hover is pointer-only for now; a keyboard path is planned.
 - **New content is decorated after a ~300 ms debounce**, so during fast
@@ -202,36 +229,53 @@ both the hover screenshot and the packaged zip.
 - **A very long non-virtualized feed can hit the 2000-match cap.** At the density
   measured below that is roughly 6000 posts. Feeds that drop offscreen nodes
   (Twitter, most modern timelines) stay well under it.
+- **A reference split across a block boundary is not matched**, by design — see
+  [above](#references-split-across-elements).
 - **Chromium only.** `CSS.highlights` is needed for painting. A Firefox port is
   plausible since hover no longer depends on a Chrome-only API.
 - **Data goes stale between releases**, by design — the dataset is bundled so
   that browsing triggers no network requests.
 
-## Dynamic pages
+## Performance
+
+### Scan cost on real pages
+
+Segment-based scanning versus the older per-text-node scan, which could reject
+any node without a digit:
+
+| Page | Text nodes | Per-node | Segmented | References found |
+| --- | --- | --- | --- | --- |
+| eips.ethereum.org `/all` | 1939 | 27 ms | 25.7 ms | 107 → 107 |
+| GitHub md source | 1036 | 11.6 ms | 19.8 ms | 972 → 972 |
+| ethereum.org docs | 89 | 4.3 ms | 6.1 ms | 49 → 49 |
+| DuckDuckGo search | 50 | 2.0 ms | 4.2 ms | 38 → **39** |
+
+Worst case is roughly double on small absolute numbers, and +8 ms on the heaviest
+page. Recall is identical everywhere except the search page, which gains exactly
+the one split reference — so joining inline runs is not inventing matches.
+
+### Dynamic pages
 
 Content added after load is picked up by a `MutationObserver` (debounced 300 ms,
-then run in an idle callback). Measured on a synthetic timeline that appends 250
+then run in an idle callback). Measured on a synthetic timeline appending 250
 posts per batch:
 
 | Feed | Posts | References | All highlighted | Latency | Scan cost |
 | --- | --- | --- | --- | --- | --- |
-| Growing | 2000 | 668 | yes | ~310 ms | ~2 ms |
+| Growing | 2000 | 668 | yes | ~310 ms | ~2.7 ms |
 | Virtualized | 400 (steady) | 134 | yes | ~1 ms | ~0.5 ms |
 
 The rescan re-walks the whole document rather than just the mutated subtree,
-which sounded expensive but measures at ~2 ms over 2000 text nodes — so
+which sounded expensive but measures at under 3 ms over 2000 text nodes — so
 incremental rescanning is not worth the complexity yet.
 
 ## Roadmap
 
 - Hotkey palette: fuzzy-search proposals by topic and insert the reference at the
   cursor
-- Cross-element matching, if search-results pages ever matter: group consecutive
-  text nodes within each leaf block into one string, keeping an
-  offset → (node, offset) map so matches can be translated back into Ranges
-  (which may span nodes). Must not flatten across block boundaries, or
-  `…the EIP.` + `7702 is…` in adjacent paragraphs would falsely join. Roughly one
-  module plus tests
+- Recognise proposals still in open pull requests, which is where the newest and
+  most-discussed EIPs live. Would mean indexing open PRs rather than only
+  `master`, and showing such entries as unmerged drafts
 - New-activity hints for discussions (needs host permissions — a deliberate,
   separate opt-in)
 - Related-proposal graph from the `requires` field, already captured in the data

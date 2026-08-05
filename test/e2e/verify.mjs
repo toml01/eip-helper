@@ -231,6 +231,26 @@ try {
   check('already-linked reference not decorated', (await scoped('#alreadylinked')).length === 0);
   check('contenteditable skipped', (await scoped('#editable')).length === 0);
 
+  // --- 4b. references split across inline elements ----------------------
+  // X search bolds the matched term, splitting "EIP-7702" into three text
+  // nodes. Matching has to join inline runs to see it.
+  check(
+    'matches a reference split across spans (X search)',
+    (await scoped('#x-search')).some((t) => t.replace(/\s+/g, '') === 'EIP-7702'),
+    JSON.stringify(await scoped('#x-search')),
+  );
+  check(
+    'matches a split reference with no separator (ERC + 20)',
+    (await scoped('#x-search-2')).some((t) => t.replace(/\s+/g, '') === 'ERC20'),
+    JSON.stringify(await scoped('#x-search-2')),
+  );
+  // The safety property that makes joining acceptable.
+  check(
+    'never assembles a reference across a block boundary',
+    (await scoped('#block-boundary')).length === 0,
+    JSON.stringify(await scoped('#block-boundary')),
+  );
+
   // --- 5. the core claim: no DOM mutation -------------------------------
   const domAfter = await page.evaluate(() => {
     // Exclude the extension's own tooltip host, the one element it adds.
