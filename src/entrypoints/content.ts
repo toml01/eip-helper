@@ -44,9 +44,6 @@ const BLOCK_TAGS = new Set([
   'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL',
 ]);
 
-/** Hosts whose links count as pointing at the proposal itself. */
-const SPEC_HOSTS = /(?:^|\.)(?:eips\.ethereum\.org|ercs\.ethereum\.org|github\.com)$/i;
-
 interface Hit {
   match: Match;
   range: Range;
@@ -258,16 +255,32 @@ function containsPoint(range: Range, x: number, y: number): boolean {
   return false;
 }
 
+/** The innermost block-level ancestor, which is what bounds an inline run. */
+function nearestBlock(node: Text): Element | null {
+  for (let el = node.parentElement; el; el = el.parentElement) {
+    if (BLOCK_TAGS.has(el.tagName)) return el;
+  }
+  return null;
+}
+
 /**
- * Walks the document, grouping consecutive inline text runs into segments and
- * breaking at every block-level element.
+ * Walks the document, grouping consecutive inline text runs into segments that
+ * never cross a block boundary.
  *
- * The break is the safety property: without it, a paragraph ending in "EIP"
- * followed by one starting with "7702" would read as a reference.
+ * That boundary is the safety property: without it, a paragraph ending in "EIP"
+ * followed by text starting with "7702" would read as a reference.
+ *
+ * Grouping is by *nearest block ancestor* rather than by flushing when a block
+ * element is encountered. The difference matters on exit: in
+ * `<p>...EIP</p>7702...` no block element is entered between the two runs, so a
+ * flush-on-enter approach joins them and matches "EIP7702". (Whitespace between
+ * the tags usually hides this, since the separator pattern excludes newlines --
+ * which made it look fine right up until markup with no whitespace.)
  */
 function collectSegments(tooltipHost: Element | null): Array<Segment<Text>> {
   const segments: Array<Segment<Text>> = [];
   let runs: Array<{ node: Text; text: string }> = [];
+  let currentBlock: Element | null = null;
 
   const flush = () => {
     if (runs.length === 0) return;
@@ -294,9 +307,9 @@ function collectSegments(tooltipHost: Element | null): Array<Segment<Text>> {
           if (tooltipHost && (tooltipHost === el || tooltipHost.contains(el))) {
             return NodeFilter.FILTER_REJECT;
           }
-          // Block elements are visited only to mark a boundary; inline ones are
-          // transparent, so their text joins the surrounding run.
-          return BLOCK_TAGS.has(el.tagName) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+          // A <br> has no text of its own, so the ancestor comparison below
+          // cannot see it; visit it purely as a boundary marker.
+          return el.tagName === 'BR' ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
         }
         return node.nodeValue ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
       },
@@ -304,8 +317,18 @@ function collectSegments(tooltipHost: Element | null): Array<Segment<Text>> {
   );
 
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if (node.nodeType === Node.ELEMENT_NODE) flush();
-    else runs.push({ node: node as Text, text: node.nodeValue ?? '' });
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      flush(); // a <br>
+      currentBlock = null;
+      continue;
+    }
+    const text = node as Text;
+    const block = nearestBlock(text);
+    if (block !== currentBlock) {
+      flush();
+      currentBlock = block;
+    }
+    runs.push({ node: text, text: text.nodeValue ?? '' });
   }
   flush();
   return segments;
@@ -319,7 +342,6 @@ function matchSegments(
   const out: Array<{ segment: Segment<Text>; match: Match }> = [];
   for (const segment of segments) {
     for (const match of findMatches(segment.text, { isValid, allowBare })) {
-      if (alreadyLinked(segment, match)) continue;
       out.push({ segment, match });
     }
     if (out.length >= MAX_MATCHES) break;
@@ -327,30 +349,15 @@ function matchSegments(
   return out;
 }
 
-/**
- * Whether this reference is already a link to the proposal itself, in which
- * case decorating it adds nothing. Common on eips.ethereum.org and in rendered
- * markdown.
- *
- * The host check matters: X links "#EIP7702" to its own hashtag page, whose
- * href contains "EIP7702" but has nothing to do with the spec. Matching on the
- * number alone would silently skip every hashtagged reference.
+/*
+ * There is deliberately no "this is already a link to the spec, skip it" guard.
+ * One existed to avoid double-decorating references on eips.ethereum.org, but
+ * DEFAULT_SETTINGS.disabledSites already turns the extension off there entirely,
+ * so its only live effect was suppressing highlights on Google, Bing and GitHub
+ * search results -- precisely the pages where seeing a title on hover is most
+ * useful. A Google result title links to the spec, which made it look "already
+ * linked" while showing the reader nothing but the number.
  */
-function alreadyLinked(segment: Segment<Text>, match: Match): boolean {
-  const start = locate(segment, match.start);
-  const anchor = start?.node.parentElement?.closest('a[href]') as HTMLAnchorElement | null;
-  const href = anchor?.getAttribute('href');
-  if (!href) return false;
-
-  try {
-    const url = new URL(href, location.href);
-    if (!SPEC_HOSTS.test(url.hostname)) return false;
-    const rest = `${url.pathname}${url.search}${url.hash}`;
-    return new RegExp(`(?:eip|erc)[-_]?${match.n}(?:\\D|$)`, 'i').test(rest);
-  } catch {
-    return false;
-  }
-}
 
 function injectStyle(settings: Settings) {
   document.getElementById(STYLE_ID)?.remove();
