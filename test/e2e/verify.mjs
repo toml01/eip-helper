@@ -9,9 +9,21 @@
  */
 import puppeteer from 'puppeteer-core';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+
+/** Polls `fn` until it returns something truthy, or the timeout elapses. */
+const waitFor = async (fn, ms, step = 250) => {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const value = await fn();
+    if (value) return value;
+    if (Date.now() >= deadline) return undefined;
+    await new Promise((r) => setTimeout(r, step));
+  }
+};
 
 const HERE = import.meta.dirname;
 const EXT = path.resolve(HERE, '../../.output/chrome-mv3');
@@ -61,18 +73,43 @@ const summarize = (text) =>
     .filter((part) => !part.includes('{'))
     .join(' | ') || '(empty)';
 
+const profile = await mkdtemp(path.join(tmpdir(), 'eip-helper-e2e-'));
+
 const browser = await puppeteer.launch({
   executablePath: BROWSER,
   headless: false,
+  // A dedicated profile dir keeps CI runs from inheriting local state, and
+  // recent Chrome needs one for --load-extension to stick.
+  userDataDir: profile,
   args: [
     `--disable-extensions-except=${EXT}`,
     `--load-extension=${EXT}`,
     '--no-first-run',
     '--no-default-browser-check',
+    '--disable-search-engine-choice-screen',
   ],
 });
 
 try {
+  // Confirm the extension actually loaded before asserting anything about it.
+  // Without this, every "not matched" check below passes vacuously when the
+  // extension is absent -- nothing matches, so nothing is wrongly matched.
+  const worker = await waitFor(
+    async () =>
+      (await browser.targets()).find(
+        (t) => t.type() === 'service_worker' && t.url().startsWith('chrome-extension://'),
+      ),
+    25000,
+  );
+  if (!worker) {
+    console.error('FATAL: the extension service worker never appeared. Targets seen:');
+    for (const t of await browser.targets()) {
+      console.error(`  ${t.type()}  ${t.url().slice(0, 90)}`);
+    }
+    process.exit(1);
+  }
+  console.log(`extension worker: ${worker.url()}\n`);
+
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 900 });
 
@@ -81,7 +118,20 @@ try {
   const domBefore = await page.evaluate(() => document.body.innerHTML);
 
   await page.goto(URL, { waitUntil: 'networkidle2' });
-  await new Promise((r) => setTimeout(r, 1500)); // document_idle + first scan
+
+  // Poll rather than sleep a fixed time: CI runners are slow, and a fixed wait
+  // either flakes or wastes time.
+  const ranges = await waitFor(
+    async () => {
+      const n = await page.evaluate(() => CSS.highlights?.get('eip-ref')?.size ?? 0);
+      return n > 0 ? n : undefined;
+    },
+    20000,
+  );
+  if (!ranges) {
+    console.error('FATAL: no highlights registered after 20s -- the content script did not run.');
+    process.exit(1);
+  }
 
   // --- 1. the APIs this design depends on -------------------------------
   const api = await page.evaluate(() => ({
@@ -103,6 +153,10 @@ try {
     return [...h].map((r) => r.toString());
   });
   check('highlight registered', Array.isArray(hl) && hl.length > 0, `${hl?.length ?? 0} ranges`);
+  if (!hl?.length) {
+    console.error('FATAL: highlight vanished between polls; aborting to avoid vacuous passes.');
+    process.exit(1);
+  }
 
   const texts = hl ?? [];
   const has = (t) => texts.includes(t);
@@ -235,6 +289,7 @@ try {
 } finally {
   await browser.close();
   server.close();
+  await rm(profile, { recursive: true, force: true });
 }
 
 const failed = results.filter((r) => !r.pass);
