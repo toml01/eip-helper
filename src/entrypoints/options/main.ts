@@ -1,0 +1,45 @@
+import { getSettings, setSettings } from '../../core/settings';
+import type { Settings } from '../../core/types';
+
+const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+const enabled = $<HTMLInputElement>('enabled');
+const bareNumbers = $<HTMLInputElement>('bareNumbers');
+const highlightStyle = $<HTMLSelectElement>('highlightStyle');
+const disabledSites = $<HTMLTextAreaElement>('disabledSites');
+const saved = $<HTMLParagraphElement>('saved');
+
+let flashTimer: number | undefined;
+function flash() {
+  saved.hidden = false;
+  window.clearTimeout(flashTimer);
+  flashTimer = window.setTimeout(() => {
+    saved.hidden = true;
+  }, 1200);
+}
+
+async function save(patch: Partial<Settings>) {
+  await setSettings(patch);
+  flash();
+}
+
+const settings = await getSettings();
+enabled.checked = settings.enabled;
+bareNumbers.checked = settings.bareNumbers;
+highlightStyle.value = settings.highlightStyle;
+disabledSites.value = settings.disabledSites.join('\n');
+
+enabled.addEventListener('change', () => void save({ enabled: enabled.checked }));
+bareNumbers.addEventListener('change', () => void save({ bareNumbers: bareNumbers.checked }));
+highlightStyle.addEventListener(
+  'change',
+  () => void save({ highlightStyle: highlightStyle.value as Settings['highlightStyle'] }),
+);
+disabledSites.addEventListener('change', () =>
+  void save({
+    disabledSites: disabledSites.value
+      .split('\n')
+      .map((s) => s.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, ''))
+      .filter(Boolean),
+  }),
+);

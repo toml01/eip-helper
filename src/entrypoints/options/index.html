@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EIP Helper — Options</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>EIP Helper</h1>
+
+      <label class="row">
+        <input type="checkbox" id="enabled" />
+        <span>
+          <strong>Enable on pages</strong>
+          <small>Highlight EIP/ERC references and show details on hover.</small>
+        </span>
+      </label>
+
+      <label class="row">
+        <input type="checkbox" id="bareNumbers" />
+        <span>
+          <strong>Also match bare numbers</strong>
+          <small>
+            Matches <code>7702</code> with no <code>EIP-</code> prefix. Off by default:
+            34 proposal numbers are also plausible years (2015, 2020, 2025, 2026…) and 91
+            are under 1000. When on, only 4–5 digit numbers count, the page has to look
+            Ethereum-related, and year, currency, and hex contexts are skipped.
+          </small>
+        </span>
+      </label>
+
+      <div class="row">
+        <span>
+          <strong>Highlight style</strong>
+          <small>Only decoration and tint are available — the highlight API allows nothing else.</small>
+          <select id="highlightStyle">
+            <option value="underline">Dotted underline</option>
+            <option value="background">Background tint</option>
+            <option value="both">Both</option>
+          </select>
+        </span>
+      </div>
+
+      <div class="row">
+        <span>
+          <strong>Disabled sites</strong>
+          <small>One hostname per line. Subdomains are included.</small>
+          <textarea id="disabledSites" rows="4" spellcheck="false"></textarea>
+        </span>
+      </div>
+
+      <p class="saved" id="saved" hidden>Saved</p>
+
+      <footer>
+        Data generated from
+        <a href="https://github.com/ethereum/EIPs" target="_blank" rel="noopener noreferrer">ethereum/EIPs</a>
+        and
+        <a href="https://github.com/ethereum/ERCs" target="_blank" rel="noopener noreferrer">ethereum/ERCs</a>,
+        bundled with the extension. No network requests are made while you browse.
+      </footer>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

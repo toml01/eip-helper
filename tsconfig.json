@@ -1,9 +1,10 @@
 {
+  // Extends WXT's generated config, which supplies the DOM/ESNext libs, the
+  // path aliases, and -- via .wxt/wxt.d.ts -- the `chrome` types and the
+  // defineBackground/defineContentScript globals. Overriding `include` or
+  // `types` here drops those, so neither is set.
   "extends": "./.wxt/tsconfig.json",
   "compilerOptions": {
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "types": ["node", "vitest/globals"]
-  },
-  "include": ["src", "scripts", "test", "*.ts"]
+    "resolveJsonModule": true
+  }
 }
