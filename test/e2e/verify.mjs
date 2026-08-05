@@ -75,20 +75,54 @@ const summarize = (text) =>
 
 const profile = await mkdtemp(path.join(tmpdir(), 'eip-helper-e2e-'));
 
-const browser = await puppeteer.launch({
-  executablePath: BROWSER,
-  headless: false,
-  // A dedicated profile dir keeps CI runs from inheriting local state, and
-  // recent Chrome needs one for --load-extension to stick.
-  userDataDir: profile,
-  args: [
-    `--disable-extensions-except=${EXT}`,
-    `--load-extension=${EXT}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-search-engine-choice-screen',
-  ],
-});
+const COMMON_ARGS = [
+  '--no-first-run',
+  '--no-default-browser-check',
+  '--disable-search-engine-choice-screen',
+];
+
+/**
+ * Loads the unpacked extension, coping with the fact that there are now two
+ * mechanisms and no single browser supports both well.
+ *
+ * Chrome 137 removed `--load-extension` from *branded* Chrome builds, because
+ * malware abused it. It still works in Chromium, Chrome for Testing and other
+ * Chromium forks (Brave, Edge). The replacement is the CDP
+ * `Extensions.loadUnpacked` command, which puppeteer exposes as
+ * `browser.installExtension` and which requires pipe transport plus
+ * `--enable-unsafe-extension-debugging`.
+ *
+ * So: try the modern path first, and fall back to the flag.
+ */
+async function launchWithExtension() {
+  try {
+    const browser = await puppeteer.launch({
+      executablePath: BROWSER,
+      headless: false,
+      userDataDir: profile,
+      // Extensions.loadUnpacked is only exposed over a pipe connection.
+      pipe: true,
+      // Keeps puppeteer from adding --disable-extensions.
+      enableExtensions: true,
+      args: ['--enable-unsafe-extension-debugging', ...COMMON_ARGS],
+    });
+    const id = await browser.installExtension(EXT);
+    console.log(`loaded via Extensions.loadUnpacked (id ${id})`);
+    return browser;
+  } catch (err) {
+    console.log(`Extensions.loadUnpacked unavailable (${String(err).split('\n')[0]});`);
+    console.log('falling back to --load-extension');
+    return puppeteer.launch({
+      executablePath: BROWSER,
+      headless: false,
+      userDataDir: `${profile}-legacy`,
+      enableExtensions: true,
+      args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`, ...COMMON_ARGS],
+    });
+  }
+}
+
+const browser = await launchWithExtension();
 
 try {
   // Confirm the extension actually loaded before asserting anything about it.
@@ -290,6 +324,7 @@ try {
   await browser.close();
   server.close();
   await rm(profile, { recursive: true, force: true });
+  await rm(`${profile}-legacy`, { recursive: true, force: true });
 }
 
 const failed = results.filter((r) => !r.pass);
