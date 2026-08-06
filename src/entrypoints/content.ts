@@ -1,5 +1,5 @@
-import { lookup, numberValidator } from '../core/dataset';
-import { findMatches, isEthContext } from '../core/match';
+import { classify, lookup, numberValidator } from '../core/dataset';
+import { findMatches, isEthContext, parseSelection } from '../core/match';
 import { buildSegment, locate, partsCovering, type Segment } from '../core/segments';
 import { getSettings, isSiteEnabled, onSettingsChanged } from '../core/settings';
 import type { Match, Settings } from '../core/types';
@@ -13,6 +13,8 @@ const MAX_MATCHES = 2000;
 const RESCAN_DEBOUNCE_MS = 300;
 const HOVER_DWELL_MS = 120;
 const HOVER_GRACE_MS = 200;
+/** Long enough that dragging a selection does not fire on every intermediate state. */
+const SELECTION_DEBOUNCE_MS = 150;
 
 /** Subtrees that are never scanned. */
 const SKIP_TAGS = new Set([
@@ -186,6 +188,61 @@ async function start() {
     },
     { passive: true },
   );
+
+  // -- selection lookup --------------------------------------------------
+  // The manual escape hatch. Automatic bare-number matching has to stay
+  // conservative -- 34 proposal numbers are plausible years -- so a reference
+  // written bare on a page with no other Ethereum signal is unreachable
+  // automatically. Selecting it is the user asserting it IS a reference, which
+  // beats any heuristic, so every context gate is skipped here.
+  let selectionTimer: number | undefined;
+  let shownFromSelection = false;
+
+  const handleSelection = () => {
+    if (!settings.lookupOnSelection || !isSiteEnabled(settings, location.hostname)) return;
+
+    const selection = document.getSelection();
+    const dismiss = () => {
+      if (shownFromSelection) {
+        shownFromSelection = false;
+        tooltip.hide(0);
+      }
+    };
+
+    if (!selection || selection.isCollapsed) return dismiss();
+    // Selecting text inside the tooltip -- to copy a title -- must not re-enter.
+    if (selection.anchorNode && tooltip.owns(selection.anchorNode)) return;
+
+    const match = parseSelection(selection.toString());
+    if (!match) return dismiss();
+
+    const anchor = selection.getRangeAt(0).getBoundingClientRect();
+    const kind = classify(match.n, settings.includeUnmerged);
+    if (kind === 'merged' || kind === 'unmerged') {
+      shownFromSelection = true;
+      // No dwell delay: the user has already acted.
+      void tooltip.show(match, anchor, settings.includeUnmerged);
+    } else if (settings.debugMode) {
+      shownFromSelection = true;
+      tooltip.showMiss(match.n, kind, anchor);
+    } else {
+      dismiss();
+    }
+  };
+
+  // One event covers every way a selection happens -- drag, double-click,
+  // shift+arrows, select-all -- where mouseup misses keyboard selection.
+  document.addEventListener('selectionchange', () => {
+    window.clearTimeout(selectionTimer);
+    selectionTimer = window.setTimeout(handleSelection, SELECTION_DEBOUNCE_MS);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && shownFromSelection) {
+      shownFromSelection = false;
+      tooltip.hide(0);
+    }
+  });
 
   // A highlight is not a DOM node, so it has no scroll or focus events of its
   // own. Hide rather than try to keep a stale rect in sync.

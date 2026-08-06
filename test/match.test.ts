@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findMatches, isEthContext, bareLooksLikeProposal } from '../src/core/match';
+import { findMatches, isEthContext, bareLooksLikeProposal, parseSelection } from '../src/core/match';
 import { VALID_NUMBERS } from '../src/core/numbers.generated';
 
 const valid = new Set(VALID_NUMBERS);
@@ -211,5 +211,70 @@ describe('EIP/ERC namespace', () => {
 
   it('records the prefix as written so a mismatch can be surfaced', () => {
     expect(findMatches('ERC-7702', { isValid })[0]!.writtenKind).toBe('erc');
+  });
+});
+
+describe('parseSelection — explicit user lookup', () => {
+  const parse = (s: string) => parseSelection(s);
+
+  it.each([
+    ['8141', 8141, null],
+    ['EIP-8141', 8141, 'eip'],
+    ['eip 8141', 8141, 'eip'],
+    ['EIP8141', 8141, 'eip'],
+    ['#8141', 8141, null],
+    ['ERC20', 20, 'erc'],
+    ['erc-20', 20, 'erc'],
+    ['EIPs 3074', 3074, 'eip'],
+    ['EIP: 8141', 8141, 'eip'],
+    ['EIP‑8141', 8141, 'eip'], // non-breaking hyphen, as copied from rendered pages
+  ])('accepts %j', (input, n, kind) => {
+    const m = parse(input)!;
+    expect(m.n).toBe(n);
+    expect(m.writtenKind).toBe(kind);
+  });
+
+  it('tolerates the whitespace a selection usually carries', () => {
+    expect(parse('  8141 ')!.n).toBe(8141);
+    expect(parse('\n  EIP-7702\n')!.n).toBe(7702);
+  });
+
+  describe('rejects anything that is not purely a reference', () => {
+    // The anchoring is the whole safety property: selecting prose must never
+    // trigger a lookup, or reading a page would pop tooltips constantly.
+    it.each([
+      'the 8141 proposal',
+      '8141 + 8288',
+      'frame transactions (8141)',
+      'v8141',
+      '0x8141',
+      '8141.5',
+      '8141-8288',
+      'abc',
+      '',
+      '   ',
+      'EIP',
+      'EIP-',
+      '123456',
+    ])('rejects %j', (input) => {
+      expect(parse(input)).toBeNull();
+    });
+  });
+
+  it('deliberately skips the gates that automatic matching applies', () => {
+    // Selecting a number is stronger evidence than any heuristic, so the digit
+    // floor and the year rejection do not apply here. Automatic matching refuses
+    // both of these even with bare numbers enabled.
+    expect(parse('20')!.n).toBe(20);
+    expect(parse('2025')!.n).toBe(2025);
+    expect(nums('20', true)).toEqual([]);
+    expect(nums('2025', true)).toEqual([]);
+  });
+
+  it('keeps the written prefix so the EIP/ERC mix-up note still works', () => {
+    // 4337 is canonically an ERC; selecting "EIP-4337" should still resolve it
+    // and be able to say it was referenced by the wrong name.
+    expect(parse('EIP-4337')!.writtenKind).toBe('eip');
+    expect(parse('4337')!.writtenKind).toBeNull();
   });
 });

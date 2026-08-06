@@ -71,6 +71,19 @@ export interface Settings {
    * that window, so these are often the most-referenced proposals of all.
    */
   includeUnmerged: boolean;
+  /**
+   * Look up a number the user selects, skipping every context heuristic. An
+   * explicit selection is better evidence that a number is a reference than any
+   * heuristic could be, so this is how you reach a bare number on a page the
+   * automatic rules will not touch.
+   */
+  lookupOnSelection: boolean;
+  /**
+   * Show a card explaining why a selected number did not resolve, instead of
+   * staying silent. A diagnostic, not a feature -- without it a miss is
+   * indistinguishable from the extension being broken.
+   */
+  debugMode: boolean;
   highlightStyle: 'underline' | 'background' | 'both';
   /** Hostnames the user has switched off. */
   disabledSites: string[];
@@ -80,6 +93,8 @@ export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
   bareNumbers: false,
   includeUnmerged: true,
+  lookupOnSelection: true,
+  debugMode: false,
   highlightStyle: 'underline',
   // Redundant on the canonical site, which already renders every reference as
   // a real link with a preview.

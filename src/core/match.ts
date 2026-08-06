@@ -193,6 +193,44 @@ export function bareLooksLikeProposal(text: string, start: number, end: number):
 }
 
 /**
+ * A whole selection that is nothing but a reference.
+ *
+ * Anchored at both ends on purpose: that anchoring *is* the "the selection is
+ * only a token" rule, and it is why selecting a sentence can never trigger a
+ * lookup. Accepts the forms people actually select -- `8141`, `EIP-8141`,
+ * `eip 8141`, `ERC20`, `#8141` -- including the non-breaking hyphen that copying
+ * from rendered pages sometimes produces.
+ */
+const SELECTION = /^(?:(eip|erc)s?[\s\-–—‑_:.]*)?#?[\s]*(\d{1,5})$/i;
+
+/**
+ * Parses an explicit user selection into a reference.
+ *
+ * Deliberately skips every heuristic `findMatches` applies to bare numbers --
+ * the digit floor, the year and currency and hex rejections, the page-level
+ * Ethereum-context gate. Selecting a number is the user asserting it is a
+ * reference, which is better evidence than any heuristic. So `20` and `2025`
+ * resolve here even though automatic matching will never claim them.
+ *
+ * Returns null when the selection is not purely a reference; the caller decides
+ * whether the number actually exists.
+ */
+export function parseSelection(text: string): Match | null {
+  const trimmed = text.trim();
+  const m = SELECTION.exec(trimmed);
+  if (!m) return null;
+  const n = Number(m[2]);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  return {
+    start: 0,
+    end: trimmed.length,
+    n,
+    text: trimmed,
+    writtenKind: m[1] ? (m[1].toLowerCase() as 'eip' | 'erc') : null,
+  };
+}
+
+/**
  * Canonical display label. Because EIPs and ERCs share one number space, a
  * number identifies exactly one proposal -- so someone writing "EIP-4337" for
  * what is canonically ERC-4337 is referring to the right thing by the wrong

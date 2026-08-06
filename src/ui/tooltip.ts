@@ -118,6 +118,42 @@ export class Tooltip {
     return entry;
   }
 
+  /**
+   * Debug-mode card for a selection that parsed but did not resolve. Only ever
+   * reached for a parsed reference -- showing this for arbitrary selected text
+   * would pop a card on every selection the user makes.
+   */
+  showMiss(n: number, kind: 'hidden' | 'unknown', anchor: DOMRect): void {
+    window.clearTimeout(this.hideTimer);
+    this.generation++;
+
+    const { card } = this.ensure();
+    card.textContent = '';
+    card.scrollTop = 0;
+
+    const entry = el('div', 'entry');
+    const head = el('div', 'head', [el('span', 'label', `EIP-${n}`)]);
+    if (kind === 'hidden') head.append(el('span', 'badge', 'UNMERGED'));
+    entry.append(head);
+
+    entry.append(
+      el(
+        'div',
+        'desc',
+        kind === 'hidden'
+          ? 'Exists only in an open pull request. Enable that tier in options.'
+          : 'Not in the bundled dataset.',
+      ),
+    );
+    card.append(entry);
+
+    this.visible = true;
+    this.host!.style.visibility = 'hidden';
+    this.host!.style.display = 'block';
+    this.position(anchor);
+    this.host!.style.visibility = 'visible';
+  }
+
   hide(delayMs: number): void {
     window.clearTimeout(this.hideTimer);
     // Invalidates any show() currently awaiting its lookup.

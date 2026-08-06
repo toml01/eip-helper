@@ -187,6 +187,24 @@ has gone missing or if two proposals claim the same canonical number. An alias
 *overlapping* another proposal's number is fine — that is the contested case, and
 both get shown.
 
+### Looking up a number you select
+
+Automatic bare-number matching has to stay conservative, so a reference written
+bare on a page with no other Ethereum signal is unreachable — a tweet reading
+*"frame transactions (8141 + 8288)"* gets nothing, because `x.com` is not a known
+host and the tweet has no prefixed reference to unlock the page.
+
+Selecting the number fixes that. A selection that is *only* a reference —
+`8141`, `EIP-8141`, `#8141` — looks it up and skips every gate: no digit floor, no
+year or currency rejection, no page context. Selecting a number is stronger
+evidence that it is a reference than any heuristic, so `20` and `2025` resolve here
+even though automatic matching will never claim them.
+
+The parser is anchored at both ends, and that anchoring is the safety property:
+selecting a sentence cannot trigger anything. Misses are silent unless **debug
+mode** is on, which reports whether the number is absent from the dataset or
+merely in a tier you have switched off.
+
 ### Shared number namespace
 
 EIPs and ERCs share one number space, so a number identifies exactly one
@@ -287,7 +305,8 @@ both the hover screenshot and the packaged zip.
   renumbered stays in the bundled dataset until the next `npm run data:build` and
   release. Turn the tier off in options if you want merged-only.
 - **No keyboard access to the tooltip.** Highlights are not DOM nodes and cannot
-  take focus. Hover is pointer-only for now; a keyboard path is planned.
+  take focus. Hover is pointer-only; selecting a reference is the keyboard-reachable
+  path.
 - **New content is decorated after a ~300 ms debounce**, so during fast
   continuous scrolling there is a brief window where fresh references are not yet
   underlined.

@@ -20,6 +20,19 @@ export function numberValidator(includeUnmerged: boolean): (n: number) => boolea
   return (n) => merged.has(n) || unmerged.has(n);
 }
 
+/**
+ * Why a number did or did not resolve. `hidden` is the interesting one: the
+ * proposal exists but only in an open pull request, and the user has that tier
+ * switched off -- worth saying so rather than claiming it does not exist.
+ */
+export type NumberKind = 'merged' | 'unmerged' | 'hidden' | 'unknown';
+
+export function classify(n: number, includeUnmerged: boolean): NumberKind {
+  if (merged.has(n)) return 'merged';
+  if (unmerged.has(n)) return includeUnmerged ? 'unmerged' : 'hidden';
+  return 'unknown';
+}
+
 export interface LookupRequest {
   type: 'lookup';
   numbers: number[];

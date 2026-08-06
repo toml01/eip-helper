@@ -143,6 +143,22 @@ try {
     process.exit(1);
   }
   console.log(`extension worker: ${worker.url()}\n`);
+  // Regex rather than the URL constructor: the fixture's own `URL` constant
+  // shadows the global one in this module.
+  const extensionId = /^chrome-extension:\/\/([a-z]+)\//.exec(worker.url())?.[1];
+
+  /** Settings live behind the extension origin, so drive them from its own page. */
+  const setSetting = async (patch) => {
+    const opts = await browser.newPage();
+    await opts.goto(`chrome-extension://${extensionId}/options.html`);
+    await opts.evaluate((p) => chrome.storage.sync.set(p), patch);
+    await opts.close();
+    // Opening another page backgrounds the fixture, which starves its
+    // requestIdleCallback and so its rescan; put it back in front.
+    await page.bringToFront();
+    // Let the content script's storage.onChanged listener catch up.
+    await new Promise((r) => setTimeout(r, 700));
+  };
 
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 900 });
@@ -451,17 +467,127 @@ try {
   if (await hoverIn('#unmerged-single')) {
     const t = await waitForTooltip('UNMERGED');
     console.log(`      tooltip: ${summarize(t)}`);
-    check('uncontested open-PR entry is badged and explained', t.includes('UNMERGED') && t.includes('not final'));
+    check(
+      'uncontested open-PR entry is badged and links to its PR',
+      t.includes('UNMERGED') && t.includes('Pull request') && !t.includes('| Spec |'),
+    );
   } else {
-    check('uncontested open-PR entry is badged and explained', false, 'no highlight to hover');
+    check('uncontested open-PR entry is badged and links to its PR', false, 'no highlight to hover');
   }
 
 
+  // --- 7c. selection lookup ---------------------------------------------
+  /** Selects the given substring inside `sel`, the way a user would. */
+  const selectText = async (sel, needle) => {
+    await page.evaluate((s) => document.querySelector(s)?.scrollIntoView({ block: 'center' }), sel);
+    await new Promise((r) => setTimeout(r, 300));
+    await page.evaluate(() => document.getSelection()?.removeAllRanges());
+    await new Promise((r) => setTimeout(r, 250));
+    const ok = await page.evaluate(
+      ([s, n]) => {
+        const el = document.querySelector(s);
+        if (!el) return false;
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const i = n === null ? 0 : (node.nodeValue ?? '').indexOf(n);
+          if (i === -1) continue;
+          const range = document.createRange();
+          range.setStart(node, i);
+          range.setEnd(node, n === null ? (node.nodeValue ?? '').length : i + n.length);
+          const selection = document.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return true;
+        }
+        return false;
+      },
+      [sel, needle],
+    );
+    if (ok) await new Promise((r) => setTimeout(r, 400));
+    return ok;
+  };
+
+  const clearSelection = async () => {
+    await page.evaluate(() => document.getSelection()?.removeAllRanges());
+    await new Promise((r) => setTimeout(r, 400));
+  };
+
+  // The payoff: 7702 is written bare in #bare and is deliberately NOT
+  // highlighted there, because automatic bare matching is off by default.
+  // Selecting it must resolve it anyway.
+  check('bare number is not auto-highlighted', (await scoped('#bare')).length === 0);
+  if (await selectText('#bare', '7702')) {
+    const t = await waitForTooltip('Set Code for EOAs');
+    console.log(`      tooltip: ${summarize(t)}`);
+    check('selecting a bare number looks it up', t.includes('Set Code for EOAs'));
+  } else {
+    check('selecting a bare number looks it up', false, 'could not select');
+  }
+
+  // Selecting prose must do nothing, or reading a page would pop tooltips.
+  await clearSelection();
+  await selectText('#nodigits', null);
+  check('selecting prose shows nothing', !(await tooltipVisible()));
+
+  // A number with no proposal stays silent unless debug mode is on.
+  await clearSelection();
+  await selectText('#amounts', '7702%');
+  check('selecting a non-token shows nothing', !(await tooltipVisible()));
+
+  await clearSelection();
+  if (await selectText('#crosskind', 'EIP-4337')) {
+    const t = await waitForTooltip('Referenced as EIP-4337');
+    check('selecting EIP-4337 resolves canonical ERC-4337', t.includes('ERC-4337') && t.includes('Referenced as EIP-4337'));
+  } else {
+    check('selecting EIP-4337 resolves canonical ERC-4337', false, 'could not select');
+  }
+
+  // Escape must dismiss a selection-shown tooltip.
+  await page.keyboard.press('Escape');
+  await new Promise((r) => setTimeout(r, 300));
+  check('Escape dismisses a selection lookup', !(await tooltipVisible()));
+
+  // --- 7d. debug mode ---------------------------------------------------
+  await clearSelection();
+  await setSetting({ debugMode: true });
+
+  if (await selectText('#debug-miss', '9999')) {
+    const t = await waitForTooltip('Not in the bundled dataset');
+    console.log(`      tooltip: ${summarize(t)}`);
+    check(
+      'debug mode reports an unknown number',
+      t.includes('EIP-9999') && t.includes('Not in the bundled dataset'),
+    );
+  } else {
+    check('debug mode reports an unknown number', false, 'could not select');
+  }
+
+  // Even in debug mode, prose must stay silent.
+  await clearSelection();
+  await selectText('#nodigits', null);
+  check('debug mode still ignores prose', !(await tooltipVisible()));
+
+  await setSetting({ debugMode: false });
+  await clearSelection();
+
   // --- 8. rescan after client-side render ------------------------------
   await page.evaluate(() => window.addLate());
-  await new Promise((r) => setTimeout(r, 1200));
-  const late = await scoped('#lateref');
-  check('rescans DOM added later (MutationObserver)', late.includes('EIP-1559'), JSON.stringify(late));
+  // Poll: a rescan is debounced then run in an idle callback, so a fixed wait
+  // either flakes or wastes time.
+  const late =
+    (await waitFor(async () => {
+      const found = await scoped('#lateref');
+      return found.includes('EIP-1559') ? found : undefined;
+    }, 6000)) ?? (await scoped('#lateref'));
+  const diag = await page.evaluate(() => ({
+    exists: !!document.getElementById('lateref'),
+    total: CSS.highlights.get('eip-ref')?.size ?? 0,
+  }));
+  check(
+    'rescans DOM added later (MutationObserver)',
+    late.includes('EIP-1559'),
+    `${JSON.stringify(late)} exists=${diag.exists} totalRanges=${diag.total}`,
+  );
 
   await page.screenshot({ path: path.join(HERE, 'fixture-shot.png') });
 } finally {
